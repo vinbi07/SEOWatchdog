@@ -6,9 +6,14 @@ import { toDisplayPath } from "./utils/urls.js";
 import { crawlSite } from "./crawler/crawler.js";
 import { applyPageRules } from "./rules/rules.js";
 import { findDuplicateIssues } from "./rules/duplicateRules.js";
-import type { CrawlReport, CrawlSummary, Issue, Severity } from "./types/seo.js";
+import { findCoverageIssues } from "./rules/coverageRules.js";
+import { analyzeIndexingState } from "./indexing/analyzeIndexingState.js";
+import type { CrawlReport, CrawlSummary, IndexingSummary, Issue, Severity } from "./types/seo.js";
 
 const SEVERITY_ORDER: Severity[] = ["critical", "high", "medium", "low"];
+const COVERAGE_ISSUE_TYPES = new Set(["indexable_page_missing_from_sitemap", "orphaned_sitemap_page"]);
+const MAX_EXAMPLES = 5;
+const MAX_PER_SEVERITY = 5;
 
 function emptySummary(): CrawlSummary {
   return { critical: 0, high: 0, medium: 0, low: 0 };
@@ -22,14 +27,42 @@ function tallyIssues(issues: Issue[]): CrawlSummary {
   return summary;
 }
 
-function printConsoleSummary(report: CrawlReport): void {
-  const siteLabel = new URL(report.site).hostname;
+function tallyIndexingStates(pages: CrawlReport["pages"]): IndexingSummary {
+  const summary: IndexingSummary = { indexable: 0, noindexExpected: 0, noindexReview: 0, noindexUnexpected: 0 };
+  for (const page of pages) {
+    switch (page.indexingState) {
+      case "indexable":
+        summary.indexable += 1;
+        break;
+      case "noindex_expected":
+        summary.noindexExpected += 1;
+        break;
+      case "noindex_review":
+        summary.noindexReview += 1;
+        break;
+      case "noindex_unexpected":
+        summary.noindexUnexpected += 1;
+        break;
+    }
+  }
+  return summary;
+}
 
+function printConsoleSummary(report: CrawlReport): void {
   console.log("");
   console.log("SEO WATCHDOG");
   console.log("");
-  console.log(`Site: ${siteLabel}`);
+  console.log(`Site:`);
+  console.log(report.site);
+  console.log("");
   console.log(`Pages Crawled: ${report.totalPages}`);
+  console.log("");
+  console.log(`Sitemap URLs: ${report.discovery.sitemapUrls}`);
+  console.log(`Internally Discovered: ${report.discovery.internallyDiscoveredUrls}`);
+  console.log(`Discovered Not In Sitemap: ${report.discovery.discoveredNotInSitemap}`);
+  console.log(`  Indexable Missing From Sitemap: ${report.discovery.indexableMissingFromSitemap}`);
+  console.log(`  Non-Indexable (informational): ${report.discovery.nonIndexableMissingFromSitemap}`);
+  console.log(`Orphaned Sitemap Pages: ${report.discovery.orphanedSitemapPages}`);
   console.log("");
   console.log(`Critical: ${report.summary.critical}`);
   console.log(`High: ${report.summary.high}`);
@@ -37,26 +70,75 @@ function printConsoleSummary(report: CrawlReport): void {
   console.log(`Low: ${report.summary.low}`);
   console.log("");
 
-  const allIssues = report.pages.flatMap((page) => page.issues.map((issue) => ({ page, issue })));
-  if (allIssues.length > 0) {
-    console.log("Top Issues:");
+  console.log("INDEXING");
+  console.log("");
+  console.log(`Indexable Pages: ${report.indexing.indexable}`);
+  console.log(`Expected Noindex: ${report.indexing.noindexExpected}`);
+  console.log(`Noindex Needs Review: ${report.indexing.noindexReview}`);
+  console.log(`Unexpected Noindex: ${report.indexing.noindexUnexpected}`);
+  console.log("");
+
+  const allEntries = report.pages.flatMap((page) => page.issues.map((issue) => ({ page, issue })));
+  const coverageEntries = allEntries.filter((e) => COVERAGE_ISSUE_TYPES.has(e.issue.issueType));
+  const pageEntries = allEntries.filter((e) => !COVERAGE_ISSUE_TYPES.has(e.issue.issueType));
+
+  if (coverageEntries.length > 0) {
+    console.log("SITEMAP COVERAGE");
     console.log("");
 
-    const bySeverity = new Map<Severity, { page: (typeof allIssues)[number]["page"]; issue: Issue }[]>();
-    for (const entry of allIssues) {
+    const byType = new Map<string, typeof coverageEntries>();
+    for (const entry of coverageEntries) {
+      const list = byType.get(entry.issue.issueType) ?? [];
+      list.push(entry);
+      byType.set(entry.issue.issueType, list);
+    }
+
+    for (const [issueType, entries] of byType) {
+      const severity = entries[0]!.issue.severity;
+      console.log(severity.toUpperCase());
+      const label =
+        issueType === "indexable_page_missing_from_sitemap"
+          ? `${entries.length} indexable internally linked page(s) missing from the sitemap.`
+          : `${entries.length} sitemap page(s) with no internal links pointing to them.`;
+      console.log(label);
+      console.log("");
+      console.log("Examples:");
+      console.log("");
+      for (const { page } of entries.slice(0, MAX_EXAMPLES)) {
+        console.log(`* ${toDisplayPath(page.url, config.siteOrigin)}`);
+      }
+      if (entries.length > MAX_EXAMPLES) {
+        console.log(`* ... and ${entries.length - MAX_EXAMPLES} more`);
+      }
+      console.log("");
+    }
+  }
+
+  if (pageEntries.length > 0) {
+    console.log("PAGE ISSUES");
+    console.log("");
+
+    const bySeverity = new Map<Severity, typeof pageEntries>();
+    for (const entry of pageEntries) {
       const list = bySeverity.get(entry.issue.severity) ?? [];
       list.push(entry);
       bySeverity.set(entry.issue.severity, list);
     }
 
-    const MAX_PER_SEVERITY = 5;
     for (const severity of SEVERITY_ORDER) {
       const entries = bySeverity.get(severity);
       if (!entries || entries.length === 0) continue;
       for (const { page, issue } of entries.slice(0, MAX_PER_SEVERITY)) {
         console.log(severity.toUpperCase());
+        console.log("");
         console.log(toDisplayPath(page.url, config.siteOrigin));
+        console.log("");
         console.log(issue.message);
+        if (severity === "high" || severity === "critical") {
+          console.log("");
+          console.log("Recommendation:");
+          console.log(issue.recommendation);
+        }
         console.log("");
       }
       if (entries.length > MAX_PER_SEVERITY) {
@@ -75,7 +157,7 @@ async function main(): Promise<void> {
   const crawlStartedAt = new Date().toISOString();
   logger.info(`Starting SEO Watchdog audit for ${config.siteUrl}`);
 
-  const pages = await crawlSite();
+  const { pages, sitemapUrls } = await crawlSite();
 
   for (const page of pages) {
     page.issues = applyPageRules(page);
@@ -87,6 +169,18 @@ async function main(): Promise<void> {
     if (extra) page.issues.push(...extra);
   }
 
+  const coverage = findCoverageIssues(pages, sitemapUrls);
+  for (const page of pages) {
+    const extra = coverage.issuesByUrl.get(page.url);
+    if (extra) page.issues.push(...extra);
+  }
+
+  for (const page of pages) {
+    const { indexingState, issues } = analyzeIndexingState(page);
+    page.indexingState = indexingState;
+    if (issues.length > 0) page.issues.push(...issues);
+  }
+
   const crawlFinishedAt = new Date().toISOString();
   const allIssues = pages.flatMap((p) => p.issues);
 
@@ -95,7 +189,17 @@ async function main(): Promise<void> {
     crawlStartedAt,
     crawlFinishedAt,
     totalPages: pages.length,
+    discovery: {
+      sitemapUrls: sitemapUrls.size,
+      internallyDiscoveredUrls: pages.length,
+      discoveredNotInSitemap: coverage.discoveredNotInSitemapCount,
+      indexableMissingFromSitemap: coverage.indexableMissingFromSitemapCount,
+      nonIndexableMissingFromSitemap: coverage.nonIndexableMissingFromSitemapCount,
+      orphanedSitemapPages: coverage.orphanedSitemapPageCount,
+    },
+    indexing: tallyIndexingStates(pages),
     summary: tallyIssues(allIssues),
+    siteIssues: [],
     pages,
   };
 

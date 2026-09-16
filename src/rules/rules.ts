@@ -54,10 +54,10 @@ export function applyPageRules(page: PageResult): Issue[] {
     return issues;
   }
 
-  if (page.redirectCount > 0) {
+  if (page.redirectCount > 0 && page.sources.sitemap) {
     issues.push(
       makeIssue(page, {
-        issueType: "sitemap_unexpected_redirect",
+        issueType: "sitemap_url_redirect",
         severity: "high",
         message: `Sitemap URL redirects (${page.redirectCount} hop(s)) to ${page.finalUrl}.`,
         recommendation: "Update the sitemap to reference the final destination URL directly.",
@@ -66,11 +66,15 @@ export function applyPageRules(page: PageResult): Issue[] {
     );
   }
 
-  if (page.noindex) {
+  // A noindex page is only a problem when the sitemap itself claims it
+  // should be indexed. A noindex page reached only via link discovery is
+  // very likely an intentional utility/thank-you/etc. page — not a bug
+  // (see analyzeIndexingState.ts for that more nuanced handling).
+  if (page.noindex && page.sources.sitemap) {
     issues.push(
       makeIssue(page, {
-        issueType: "sitemap_noindex",
-        severity: "critical",
+        issueType: "sitemap_url_noindex",
+        severity: "high",
         message: "URL is included in the sitemap but marked noindex.",
         recommendation: "Remove this URL from the sitemap, or remove the noindex directive if it should be indexed.",
         value: page.robotsMeta.raw,
@@ -89,13 +93,15 @@ export function applyPageRules(page: PageResult): Issue[] {
       })
     );
   } else {
+    const titleSeverity = thresholds.titleLengthMediumSeverityPageTypes.includes(page.pageType) ? "medium" : "low";
+
     if (page.titleLength > thresholds.title.maxLength) {
       issues.push(
         makeIssue(page, {
           issueType: "title_too_long",
-          severity: "medium",
-          message: `Title is ${page.titleLength} characters, longer than the recommended ${thresholds.title.maxLength}.`,
-          recommendation: "Shorten the title so it is not truncated in search results.",
+          severity: titleSeverity,
+          message: `Title is ${page.titleLength} characters and may be truncated in some search result layouts.`,
+          recommendation: `Consider tightening the title to around ${thresholds.title.maxLength} characters or fewer.`,
           value: page.titleLength,
         })
       );
@@ -104,9 +110,9 @@ export function applyPageRules(page: PageResult): Issue[] {
       issues.push(
         makeIssue(page, {
           issueType: "title_too_short",
-          severity: "medium",
-          message: `Title is ${page.titleLength} characters, shorter than the recommended ${thresholds.title.minLength}.`,
-          recommendation: "Expand the title to better describe the page's content.",
+          severity: titleSeverity,
+          message: "Page title is very short and may not provide enough context to search engines or users.",
+          recommendation: `Consider expanding the title to better describe the page's content (around ${thresholds.title.minLength}+ characters).`,
           value: page.titleLength,
         })
       );
@@ -266,16 +272,32 @@ export function applyPageRules(page: PageResult): Issue[] {
     );
   }
 
-  if (page.wordCount < thresholds.wordCount.low) {
+  const wordCountThreshold = thresholds.wordCount.byPageType[page.pageType];
+  if (wordCountThreshold !== null && page.wordCount < wordCountThreshold) {
     issues.push(
       makeIssue(page, {
         issueType: "low_word_count",
         severity: "low",
-        message: `Page has an unusually low word count (${page.wordCount} words).`,
+        message: `Low content for ${page.pageType} page (${page.wordCount} words, expected at least ${wordCountThreshold}).`,
         recommendation: "Consider whether this page has enough unique content to be useful and indexable.",
         value: page.wordCount,
       })
     );
+  }
+
+  // --- Page-type specific rules -----------------------------------------
+  if (page.pageType === "episode") {
+    const hasPodcastEpisodeSchema = page.structuredData.some((entry) => entry.type === "PodcastEpisode");
+    if (!hasPodcastEpisodeSchema) {
+      issues.push(
+        makeIssue(page, {
+          issueType: "missing_podcast_episode_schema",
+          severity: "medium",
+          message: "Episode page is missing PodcastEpisode structured data.",
+          recommendation: "Add PodcastEpisode structured data describing the episode.",
+        })
+      );
+    }
   }
 
   return issues;

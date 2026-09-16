@@ -8,6 +8,12 @@ const envSchema = z.object({
   REQUEST_DELAY_MS: z.coerce.number().int().nonnegative().default(250),
   USER_AGENT: z.string().min(1).default("SEOWatchdogBot/0.1 (+https://github.com/your-org/seo-watchdog)"),
   MAX_PAGES: z.coerce.number().int().nonnegative().default(0),
+  DISCOVER_INTERNAL_URLS: z
+    .enum(["true", "false"])
+    .default("true")
+    .transform((v) => v === "true"),
+  MAX_DISCOVERED_PAGES: z.coerce.number().int().nonnegative().default(100),
+  MAX_CRAWL_DEPTH: z.coerce.number().int().nonnegative().default(3),
 });
 
 function loadEnv() {
@@ -34,6 +40,9 @@ export const config = {
   requestDelayMs: env.REQUEST_DELAY_MS,
   userAgent: env.USER_AGENT,
   maxPages: env.MAX_PAGES,
+  discoverInternalUrls: env.DISCOVER_INTERNAL_URLS,
+  maxDiscoveredPages: env.MAX_DISCOVERED_PAGES,
+  maxCrawlDepth: env.MAX_CRAWL_DEPTH,
   outputDir: "output",
   outputFile: "output/latest-crawl.json",
 } as const;

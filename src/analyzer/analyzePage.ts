@@ -3,6 +3,8 @@ import type { FetchResult } from "../crawler/fetchPage.js";
 import type { PageResult } from "../types/seo.js";
 import { config } from "../config/config.js";
 import { normalizeUrl } from "../utils/urls.js";
+import { classifyPage } from "../pageTypes/classifyPage.js";
+import { determinePublicationState } from "../indexing/publicationState.js";
 import { extractLinks } from "./links.js";
 import {
   extractCanonical,
@@ -18,7 +20,7 @@ import {
   extractTwitter,
   extractWordCount,
 } from "./metadata.js";
-import { extractStructuredData } from "./structuredData.js";
+import { extractStructuredData, extractStructuredDataDetails } from "./structuredData.js";
 
 /**
  * Turns a raw fetch result into a fully-populated PageResult (minus `issues`,
@@ -48,14 +50,23 @@ export function analyzePage(requestedUrl: string, fetchResult: FetchResult): Pag
     internalLinks: [],
     externalLinks: [],
     brokenInternalLinks: [],
+    internalInboundLinkCount: 0,
+    internalOutboundLinkCount: 0,
     images: { total: 0, missingAlt: 0 },
     openGraph: { title: null, description: null, image: null },
     twitter: { card: null, title: null, description: null, image: null },
     structuredData: [],
+    structuredDataDetails: [],
     lang: null,
     hasViewport: false,
     hasFavicon: false,
     isIndexable: false,
+    pageType: classifyPage(fetchResult.finalUrl),
+    sources: { sitemap: false, discovered: false },
+    publicationState: "unknown",
+    // Placeholder; finalized by analyzeIndexingState() once `sources` is
+    // settled for the full crawl (see src/indexing/analyzeIndexingState.ts).
+    indexingState: "indexable",
   };
 
   if (fetchResult.outcome !== "ok" || !fetchResult.html) {
@@ -77,6 +88,8 @@ export function analyzePage(requestedUrl: string, fetchResult: FetchResult): Pag
   const openGraph = extractOpenGraph($);
   const twitter = extractTwitter($);
   const structuredData = extractStructuredData($);
+  const structuredDataDetails = extractStructuredDataDetails($);
+  const publicationState = determinePublicationState(structuredDataDetails);
   const lang = extractLang($);
   const hasViewport = extractHasViewport($);
   const hasFavicon = extractHasFavicon($);
@@ -99,10 +112,13 @@ export function analyzePage(requestedUrl: string, fetchResult: FetchResult): Pag
     wordCount,
     internalLinks,
     externalLinks,
+    internalOutboundLinkCount: internalLinks.length,
     images,
     openGraph,
     twitter,
     structuredData,
+    structuredDataDetails,
+    publicationState,
     lang,
     hasViewport,
     hasFavicon,

@@ -1,6 +1,6 @@
 import { config } from "../config/config.js";
 import { logger } from "../utils/logger.js";
-import { dedupeUrls, normalizeUrl } from "../utils/urls.js";
+import { dedupeUrls, isCrawlableDiscoveredUrl, normalizeUrl } from "../utils/urls.js";
 import { discoverSitemapUrls, isDisallowedByRobots } from "../sitemap/sitemap.js";
 import { fetchPage } from "./fetchPage.js";
 import { analyzePage } from "../analyzer/analyzePage.js";
@@ -39,55 +39,141 @@ async function runPool<T, R>(
   return results;
 }
 
+export interface CrawlResult {
+  pages: PageResult[];
+  /** Normalized sitemap URLs, for sitemap-coverage comparisons downstream. */
+  sitemapUrls: Set<string>;
+}
+
+function safePathname(url: string): string {
+  try {
+    return new URL(url).pathname;
+  } catch {
+    return "";
+  }
+}
+
+async function fetchAndAnalyze(url: string): Promise<PageResult> {
+  const fetchResult = await fetchPage(url);
+  if (fetchResult.outcome !== "ok") {
+    logger.warn(`Failed to crawl ${url}: ${fetchResult.errorMessage ?? `HTTP ${fetchResult.status}`}`);
+  }
+  return analyzePage(url, fetchResult);
+}
+
 /**
- * Discovers sitemap URLs, crawls each one (respecting robots.txt Disallow
- * rules and the configured domain/concurrency/timeout limits), and returns
- * one PageResult per crawled page with `brokenInternalLinks` resolved
- * against the set of pages we actually crawled.
+ * Discovers sitemap URLs, crawls each one, then (when enabled) follows
+ * internal links found on those pages to discover and crawl additional
+ * pages that aren't listed in the sitemap — up to MAX_DISCOVERED_PAGES
+ * additional pages and MAX_CRAWL_DEPTH link-hops from the sitemap seeds.
+ * Respects robots.txt Disallow rules throughout. Returns one PageResult
+ * per crawled page, with `brokenInternalLinks` and internal inbound/
+ * outbound link counts resolved against the full crawled set.
  */
-export async function crawlSite(): Promise<PageResult[]> {
+export async function crawlSite(): Promise<CrawlResult> {
   const { urls, robots } = await discoverSitemapUrls();
 
-  let targetUrls = dedupeUrls(urls);
-
-  if (config.maxPages > 0 && targetUrls.length > config.maxPages) {
-    logger.warn(`Sitemap contains ${targetUrls.length} URLs; capping at MAX_PAGES=${config.maxPages}`);
-    targetUrls = targetUrls.slice(0, config.maxPages);
+  let sitemapTargets = dedupeUrls(urls);
+  if (config.maxPages > 0 && sitemapTargets.length > config.maxPages) {
+    logger.warn(`Sitemap contains ${sitemapTargets.length} URLs; capping at MAX_PAGES=${config.maxPages}`);
+    sitemapTargets = sitemapTargets.slice(0, config.maxPages);
   }
 
-  const disallowed = new Set<string>();
-  const crawlable = targetUrls.filter((url) => {
-    const pathname = (() => {
-      try {
-        return new URL(url).pathname;
-      } catch {
-        return "";
-      }
-    })();
-    if (isDisallowedByRobots(pathname, robots.disallowedPaths)) {
-      disallowed.add(url);
-      return false;
-    }
-    return true;
-  });
+  const sitemapUrls = new Set(sitemapTargets.map((u) => normalizeUrl(u) ?? u));
 
-  if (disallowed.size > 0) {
-    logger.info(`Skipping ${disallowed.size} URL(s) disallowed by robots.txt`);
+  const isAllowed = (url: string): boolean => !isDisallowedByRobots(safePathname(url), robots.disallowedPaths);
+
+  const disallowedSitemapUrls = sitemapTargets.filter((u) => !isAllowed(u));
+  if (disallowedSitemapUrls.length > 0) {
+    logger.info(`Skipping ${disallowedSitemapUrls.length} sitemap URL(s) disallowed by robots.txt`);
+  }
+  const crawlableSitemapUrls = sitemapTargets.filter(isAllowed);
+
+  logger.info(`Crawling ${crawlableSitemapUrls.length} sitemap URL(s) with concurrency=${config.maxConcurrency}`);
+
+  const pages = await runPool(crawlableSitemapUrls, config.maxConcurrency, config.requestDelayMs, fetchAndAnalyze);
+  for (const page of pages) {
+    page.sources.sitemap = true;
   }
 
-  logger.info(`Crawling ${crawlable.length} URL(s) with concurrency=${config.maxConcurrency}`);
+  const visited = new Set<string>(pages.map((p) => normalizeUrl(p.finalUrl) ?? p.finalUrl));
+  for (const url of crawlableSitemapUrls) {
+    visited.add(normalizeUrl(url) ?? url);
+  }
 
-  const pages = await runPool(crawlable, config.maxConcurrency, config.requestDelayMs, async (url) => {
-    const fetchResult = await fetchPage(url);
-    if (fetchResult.outcome !== "ok") {
-      logger.warn(`Failed to crawl ${url}: ${fetchResult.errorMessage ?? `HTTP ${fetchResult.status}`}`);
-    }
-    return analyzePage(url, fetchResult);
-  });
+  if (config.discoverInternalUrls) {
+    await discoverAdditionalPages(pages, visited, isAllowed);
+  }
 
   resolveBrokenInternalLinks(pages);
+  resolveInternalInboundLinkCounts(pages);
+  resolvePageSources(pages);
 
-  return pages;
+  return { pages, sitemapUrls };
+}
+
+/**
+ * BFS over internal links found on already-crawled pages, crawling newly
+ * discovered same-domain HTML-page URLs (skipping assets, disallowed
+ * paths, and URLs already visited) up to the configured depth/page budget.
+ * Mutates `pages` and `visited` in place as it goes.
+ */
+async function discoverAdditionalPages(
+  pages: PageResult[],
+  visited: Set<string>,
+  isAllowed: (url: string) => boolean
+): Promise<void> {
+  let frontier = collectNewLinkTargets(pages, visited, isAllowed);
+  let depth = 1;
+  let discoveredCount = 0;
+
+  while (frontier.length > 0 && depth <= config.maxCrawlDepth && discoveredCount < config.maxDiscoveredPages) {
+    const remainingBudget = config.maxDiscoveredPages - discoveredCount;
+    const batch = frontier.slice(0, remainingBudget);
+
+    for (const url of batch) visited.add(url);
+
+    logger.info(`Discovery depth ${depth}: crawling ${batch.length} newly discovered URL(s)`);
+
+    const newPages = await runPool(batch, config.maxConcurrency, config.requestDelayMs, fetchAndAnalyze);
+    for (const page of newPages) {
+      page.sources.discovered = true;
+      visited.add(normalizeUrl(page.finalUrl) ?? page.finalUrl);
+    }
+    pages.push(...newPages);
+    discoveredCount += newPages.length;
+
+    if (discoveredCount >= config.maxDiscoveredPages) {
+      logger.warn(`Reached MAX_DISCOVERED_PAGES=${config.maxDiscoveredPages}; stopping discovery.`);
+      break;
+    }
+
+    frontier = collectNewLinkTargets(newPages, visited, isAllowed);
+    depth += 1;
+  }
+
+  if (frontier.length > 0 && depth > config.maxCrawlDepth) {
+    logger.warn(`Reached MAX_CRAWL_DEPTH=${config.maxCrawlDepth} with ${frontier.length} URL(s) still undiscovered.`);
+  }
+}
+
+function collectNewLinkTargets(
+  pages: PageResult[],
+  visited: Set<string>,
+  isAllowed: (url: string) => boolean
+): string[] {
+  const targets = new Set<string>();
+  for (const page of pages) {
+    for (const link of page.internalLinks) {
+      const normalized = normalizeUrl(link);
+      if (!normalized) continue;
+      if (visited.has(normalized)) continue;
+      if (!isCrawlableDiscoveredUrl(normalized)) continue;
+      if (!isAllowed(normalized)) continue;
+      targets.add(normalized);
+    }
+  }
+  return Array.from(targets);
 }
 
 /**
@@ -115,5 +201,54 @@ function resolveBrokenInternalLinks(pages: PageResult[]): void {
       }
     }
     page.brokenInternalLinks = broken;
+  }
+}
+
+/**
+ * Ensures `sources.discovered` reflects where a URL was actually observed,
+ * not just which crawl round happened to process it first. A page crawled
+ * via the sitemap round can still be `discovered: true` if some other
+ * crawled page also links to it internally. Exported for unit testing.
+ */
+export function resolvePageSources(pages: PageResult[]): void {
+  const linkedTargets = new Set<string>();
+  for (const page of pages) {
+    const sourceKey = normalizeUrl(page.finalUrl) ?? page.finalUrl;
+    for (const link of page.internalLinks) {
+      const key = normalizeUrl(link) ?? link;
+      if (key === sourceKey) continue; // a page linking to itself doesn't count as being "discovered"
+      linkedTargets.add(key);
+    }
+  }
+
+  for (const page of pages) {
+    const key = normalizeUrl(page.finalUrl) ?? page.finalUrl;
+    const requestedKey = normalizeUrl(page.url) ?? page.url;
+    if (linkedTargets.has(key) || linkedTargets.has(requestedKey)) {
+      page.sources.discovered = true;
+    }
+  }
+}
+
+/**
+ * Counts, for each crawled page, how many *other* crawled pages link to it
+ * internally. Exported for unit testing.
+ */
+export function resolveInternalInboundLinkCounts(pages: PageResult[]): void {
+  const inboundCounts = new Map<string, number>();
+
+  for (const page of pages) {
+    const sourceKey = normalizeUrl(page.finalUrl) ?? page.finalUrl;
+    const targets = new Set(page.internalLinks.map((link) => normalizeUrl(link) ?? link));
+    targets.delete(sourceKey); // don't count self-links
+
+    for (const target of targets) {
+      inboundCounts.set(target, (inboundCounts.get(target) ?? 0) + 1);
+    }
+  }
+
+  for (const page of pages) {
+    const key = normalizeUrl(page.finalUrl) ?? page.finalUrl;
+    page.internalInboundLinkCount = inboundCounts.get(key) ?? 0;
   }
 }

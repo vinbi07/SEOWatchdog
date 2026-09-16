@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { dedupeUrls, isSameDomain, normalizeUrl } from "./urls.js";
+import { dedupeUrls, isCrawlableDiscoveredUrl, isLikelyAssetUrl, isSameDomain, normalizeUrl } from "./urls.js";
 
 describe("normalizeUrl", () => {
   it("strips the fragment", () => {
@@ -26,6 +26,51 @@ describe("normalizeUrl", () => {
 
   it("returns null for invalid URLs", () => {
     expect(normalizeUrl("not a url")).toBeNull();
+  });
+
+  it("strips UTM/tracking query parameters", () => {
+    expect(normalizeUrl("https://example.com/page?utm_source=newsletter&utm_medium=email")).toBe(
+      "https://example.com/page"
+    );
+  });
+
+  it("normalizes tracking-parameter variants to the same URL", () => {
+    const a = normalizeUrl("https://example.com/page?utm_source=fb&fbclid=abc123");
+    const b = normalizeUrl("https://example.com/page?utm_source=ig&gclid=xyz789");
+    expect(a).toBe(b);
+    expect(a).toBe("https://example.com/page");
+  });
+
+  it("preserves non-tracking query parameters", () => {
+    expect(normalizeUrl("https://example.com/search?q=foo")).toBe("https://example.com/search?q=foo");
+  });
+});
+
+describe("isLikelyAssetUrl", () => {
+  it("flags common asset extensions", () => {
+    expect(isLikelyAssetUrl("https://example.com/image.jpg")).toBe(true);
+    expect(isLikelyAssetUrl("https://example.com/file.pdf")).toBe(true);
+    expect(isLikelyAssetUrl("https://example.com/script.js")).toBe(true);
+    expect(isLikelyAssetUrl("https://example.com/font.woff2")).toBe(true);
+  });
+
+  it("does not flag normal page paths", () => {
+    expect(isLikelyAssetUrl("https://example.com/episodes/some-slug")).toBe(false);
+    expect(isLikelyAssetUrl("https://example.com/booking/speaking")).toBe(false);
+  });
+});
+
+describe("isCrawlableDiscoveredUrl", () => {
+  it("rejects asset URLs", () => {
+    expect(isCrawlableDiscoveredUrl("https://example.com/image.jpg")).toBe(false);
+  });
+
+  it("accepts plain page URLs", () => {
+    expect(isCrawlableDiscoveredUrl("https://example.com/episodes/some-slug")).toBe(true);
+  });
+
+  it("rejects URLs with excessive query parameters", () => {
+    expect(isCrawlableDiscoveredUrl("https://example.com/list?a=1&b=2&c=3&d=4")).toBe(false);
   });
 });
 
