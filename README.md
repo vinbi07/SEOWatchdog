@@ -5,10 +5,12 @@ tool. It crawls a website's sitemap, analyzes each page for a fixed set of
 technical/on-page SEO signals, applies a rules engine to flag issues by
 severity, and writes a structured JSON report plus a console summary.
 
-This is the first version of an eventual continuous monitoring system: no
-AI/LLM analysis, no dashboard, no persistence — just a reliable engine that
-produces structured, stable output so that future versions can answer
-"what changed since the last crawl?"
+This was the first version of an eventual continuous monitoring system. Step
+2 adds the "what changed since the last crawl?" answer: optional Supabase
+persistence of every crawl, deterministic historical comparison against the
+previous successful crawl, and a minimal read-only dashboard (see section 9).
+No AI/LLM analysis, scheduled crawls, or external integrations (Search
+Console, PageSpeed) yet — those are still planned (section 8).
 
 ## 1. What it does
 
@@ -62,10 +64,20 @@ All configuration lives in `.env` (see `.env.example`).
 | `DISCOVER_INTERNAL_URLS` | no   | `true`                  | Whether to follow internal links to discover pages beyond the sitemap |
 | `MAX_DISCOVERED_PAGES`  | no    | `100`                   | Safety cap on how many *additional* (non-sitemap) pages discovery may crawl |
 | `MAX_CRAWL_DEPTH`    | no       | `3`                     | How many link-hops beyond the sitemap seed pages discovery may follow |
+| `PERSIST_RESULTS`    | no       | `false`                 | Set to `true` to persist each crawl to Supabase and enable historical comparison |
+| `SUPABASE_URL`       | only if persisting | —             | Supabase project URL |
+| `SUPABASE_SERVICE_ROLE_KEY` | only if persisting | —      | Supabase **service role** key. Server-side/CLI use only — see section 9 |
+| `DASHBOARD_PORT`     | no       | `4173`                  | Port for the local read-only dashboard server (`npm run dashboard`) |
 
 Environment variables are validated at startup with Zod; the process exits
 with a clear error message if `SITE_URL` is missing or invalid. No
 environment variables are ever written into the report output.
+
+**Never expose `SUPABASE_SERVICE_ROLE_KEY` in any frontend or browser-loaded
+code.** It is read only by the CLI (`npm run audit`) and by the dashboard's
+local server process (`npm run dashboard`); the dashboard's browser-side JS
+never receives it — it only talks to that local server's own `/api/*`
+endpoints.
 
 ## 4. Running an audit
 
@@ -76,15 +88,22 @@ npm run audit
 This runs `src/index.ts` via `tsx` (no build step required). It will:
 
 - print progress/log lines to stderr/stdout as it crawls,
-- print a console summary at the end,
-- write the full report to `output/latest-crawl.json`.
+- print a console summary at the end, including a **"SINCE LAST CRAWL"**
+  section (see section 9),
+- write the full report to `output/latest-crawl.json`,
+- if `PERSIST_RESULTS=true`, persist the crawl to Supabase and compare it
+  against the previous successful crawl (see section 9). If Supabase is
+  unreachable or misconfigured, the audit still completes and
+  `output/latest-crawl.json` is still written — persistence failure never
+  blocks or corrupts the local report.
 
 Other scripts:
 
 ```bash
-npm run build   # type-check and compile to dist/ (optional)
-npm test        # run the test suite once
+npm run build      # type-check and compile to dist/ (optional)
+npm test           # run the test suite once
 npm run test:watch
+npm run dashboard  # start the local read-only dashboard (see section 9)
 ```
 
 ## 5. Report structure
@@ -113,9 +132,38 @@ npm run test:watch
   },
   "summary": { "critical": 0, "high": 0, "medium": 7, "low": 12 },
   "siteIssues": [],
-  "pages": [ /* PageResult[] */ ]
+  "pages": [ /* PageResult[] */ ],
+
+  "comparison": {
+    "baseline": false,
+    "previousCrawlId": "3f2a...",
+    "newIssues": 2,
+    "resolvedIssues": 1,
+    "ongoingIssues": 16,
+    "newPages": 1,
+    "removedPages": 0,
+    "changedPages": 3
+  },
+  "changes": [ /* ChangeEvent[], see section 9 */ ],
+  "persistence": { "status": "success", "crawlRunId": "9c1e...", "errorMessage": null }
 }
 ```
+
+`comparison`, `changes`, and `persistence` are always present, regardless of
+whether `PERSIST_RESULTS` is enabled:
+
+- When persistence is disabled or Supabase is unreachable,
+  `persistence.status` is `"skipped"` or `"failed"`, and `comparison` falls
+  back to a `baseline: true` shape with all counts at `0` — this is *not* a
+  claim that a baseline was actually stored, just a safe default so
+  consumers of the JSON don't have to special-case a missing key. Check
+  `persistence.status` to know whether the comparison is real.
+- When persistence succeeds and no previous successful crawl exists yet,
+  `comparison.baseline` is genuinely `true` — this crawl was stored as the
+  first data point.
+- Otherwise `comparison` reflects a real diff against the previous
+  successful crawl, and `changes` lists every generated `ChangeEvent` (see
+  section 9 for the full shape and event types).
 
 `discovery` summarizes sitemap coverage: how many URLs came from the
 sitemap, how many distinct pages were crawled in total (sitemap +
@@ -315,9 +363,9 @@ not to assume the sitemap is correct.
 - **"Orphaned sitemap page" is diagnostic, not definitive.** It only means
   no *crawled* page links to that URL — it doesn't know about navigation
   rendered by JavaScript, or links from pages outside the crawl budget.
-- **No historical comparison yet.** Each run overwrites
-  `output/latest-crawl.json`; there is no history or diffing against a
-  previous crawl (see below).
+- **Historical comparison requires Supabase.** Without `PERSIST_RESULTS=true`
+  and valid Supabase credentials, each run still overwrites
+  `output/latest-crawl.json` with no history kept (see section 9).
 - **robots.txt handling is best-effort.** Only simple `User-agent`/
   `Disallow`/`Sitemap` directives are parsed; wildcard and `Allow`
   precedence rules are not implemented.
@@ -336,9 +384,6 @@ not to assume the sitemap is correct.
 
 Structured so these can be added without reworking the core engine:
 
-- Supabase persistence of crawl history
-- Comparison against the previous crawl (newly introduced / resolved
-  issues)
 - Google Search Console and PageSpeed Insights / Core Web Vitals
   integration
 - Scheduled audits
@@ -346,7 +391,117 @@ Structured so these can be added without reworking the core engine:
 - AI/LLM-based qualitative analysis layered on top of the deterministic
   report
 - Automated GitHub issue creation and PR recommendations
-- Multi-site dashboard
+
+Already implemented as of Step 2 (section 9): Supabase persistence of crawl
+history, and comparison against the previous crawl (new/ongoing/resolved
+issues, page lifecycle, metadata/indexing/sitemap changes) plus a minimal
+multi-site dashboard.
+
+## 9. Database Setup, Historical Comparison, and Dashboard (Step 2)
+
+### Database setup
+
+This repo had no `supabase/migrations` folder before Step 2. The Supabase
+project it connects to (in this deployment) is shared with an unrelated
+internal app that already has tables like `scorecard`, `rocks`, `issues`,
+`todos`, `tasks`, `people`, `meetings`, etc. To guarantee no collisions
+(`issues` and `tasks` in particular already exist with a different shape),
+every SEO Watchdog table is namespaced with an `seo_` prefix and the
+migration is purely additive — nothing from the existing schema is
+touched, renamed, or dropped.
+
+Migration file: `supabase/migrations/0001_seo_watchdog_core_schema.sql`.
+
+Final table mapping:
+
+| Concept          | Table                    |
+| ---------------- | ------------------------ |
+| Sites            | `seo_sites`               |
+| Crawl runs       | `seo_crawl_runs`          |
+| Page snapshots   | `seo_page_snapshots` (immutable per crawl run) |
+| Issue snapshots  | `seo_issue_snapshots`     |
+| Change events    | `seo_change_events`       |
+
+RLS is enabled on all five tables with a permissive `for all using (true)`
+policy, scoped only to these tables — matching the convention already used
+throughout the rest of that Supabase project (no auth layer exists there
+today). This is safe here because the tables are only ever written with the
+service role key from trusted server-side code (the CLI and the dashboard
+server), and the dashboard's browser code never talks to Supabase directly
+(see "Dashboard" below).
+
+To apply the migration, run its SQL against your Supabase project (via the
+Supabase CLI's `supabase db push`, the SQL editor in the dashboard, or your
+own migration runner) — it's a plain idempotent (`create table if not
+exists`) SQL file with no project-specific tooling required.
+
+### Baseline process
+
+1. **First persisted crawl** (`PERSIST_RESULTS=true`, no prior successful
+   crawl for that site's `domain` in `seo_crawl_runs`): stored normally, but
+   `comparison.baseline` is `true` and no synthetic "new" events are
+   generated for its pages/issues. Console output prints "Baseline crawl
+   established."
+2. **Every later crawl**: compared against the most recent crawl run with
+   `status = 'success'` for the same site (via `seo_sites.domain`, derived
+   from the site's hostname — so `https://example.com` and
+   `https://example.com/` are the same site). `partial`/`failed` runs are
+   never used as a comparison baseline, by construction of that query.
+3. If persistence itself fails partway through a crawl (e.g. Supabase drops
+   mid-write), the crawl run is marked `partial` (if page/issue snapshots
+   were already saved) or `failed` (if nothing was saved yet), an error is
+   logged, and `output/latest-crawl.json` is still written locally with
+   `persistence.status` reflecting what happened.
+
+### Historical comparison
+
+Comparison logic lives under `src/history/` (`normalizeForComparison.ts`,
+`issueKey.ts`, `compareIssues.ts`, `comparePages.ts`, `compareCrawls.ts`,
+`changeEventFactory.ts`) and is deliberately independent of the
+crawler/analyzer — it only consumes the same `PageResult[]`/`Issue[]` shapes
+those already produce, plus a read of the previous crawl's persisted
+snapshots.
+
+- **Issue identity** is a stable key: `normalizedUrl::issueType` (see
+  `buildIssueKey`), not a random id — so the same logical issue matches
+  across crawls even though every row gets a fresh UUID.
+- **Noise is filtered deliberately**: whitespace-only text edits, trailing
+  slashes, and UTM parameters never register as a change; structured-data
+  `@type` sets are compared unordered/deduped; word count only "changes" at
+  ≥100 words absolute or ≥30% relative; internal-inbound-link-count changes
+  are ignored unless the page crosses into/out of zero (possible orphaning)
+  or moves by ≥5.
+- **Event types**: `issue_new` / `issue_ongoing` / `issue_resolved` /
+  `severity_changed`, `page_new` / `page_removed`, `field_changed`,
+  `indexability_changed`, `indexing_state_changed`,
+  `publication_state_changed`, `page_added_to_sitemap` /
+  `page_removed_from_sitemap`, `page_became_discovered` /
+  `page_no_longer_discovered`, `http_status_changed`, `canonical_changed`.
+
+### Dashboard
+
+`npm run dashboard` starts a small local, **read-only** server
+(`src/dashboard/server.ts`, plain Node `http` — no framework added) on
+`http://localhost:4173` (configurable via `DASHBOARD_PORT`). It:
+
+- holds `SUPABASE_SERVICE_ROLE_KEY` server-side only,
+- exposes a small JSON API under `/api/*` (sites, latest crawl + since-last-crawl
+  summary, crawl history, recent change events, current issues, pages),
+- serves the static page in `public/dashboard/` (`index.html` / `app.js` /
+  `styles.css`, vanilla JS, no build step or frontend framework).
+
+It cannot modify SEO metadata, resolve issues, delete crawls, or trigger a
+new audit — it only reads. This is intended as a **local/internal
+development dashboard** for now; it has no authentication of its own, so
+don't expose `DASHBOARD_PORT` beyond localhost/your own network without
+adding one.
+
+Run it after at least one persisted crawl (`PERSIST_RESULTS=true`) exists:
+
+```bash
+npm run audit       # with PERSIST_RESULTS=true, once or twice to get history
+npm run dashboard   # then open http://localhost:4173
+```
 
 ## Project structure
 
@@ -361,7 +516,15 @@ src/
   rules/         severity thresholds + rules engine + duplicate/coverage detection
   types/         shared TypeScript types
   utils/         URL normalization (incl. tracking-param stripping), logging
+  db/            Supabase client + seo_* table read/write functions
+  history/       crawl-to-crawl comparison (normalization, issue/page diffing, change events)
+  persistence/   orchestrates "persist this crawl, then compare it" (never throws)
+  dashboard/     local read-only dashboard server + its JSON API
   index.ts       CLI entrypoint (`npm run audit`)
+public/
+  dashboard/     static dashboard page (index.html / app.js / styles.css)
+supabase/
+  migrations/    additive SQL migrations (seo_* tables only)
 output/
   latest-crawl.json
 ```

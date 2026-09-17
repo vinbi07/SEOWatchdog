@@ -14,6 +14,13 @@ const envSchema = z.object({
     .transform((v) => v === "true"),
   MAX_DISCOVERED_PAGES: z.coerce.number().int().nonnegative().default(100),
   MAX_CRAWL_DEPTH: z.coerce.number().int().nonnegative().default(3),
+  PERSIST_RESULTS: z
+    .enum(["true", "false"])
+    .default("false")
+    .transform((v) => v === "true"),
+  SUPABASE_URL: z.preprocess((v) => (v === "" ? undefined : v), z.string().url().optional()),
+  SUPABASE_SERVICE_ROLE_KEY: z.preprocess((v) => (v === "" ? undefined : v), z.string().min(1).optional()),
+  DASHBOARD_PORT: z.coerce.number().int().positive().default(4173),
 });
 
 function loadEnv() {
@@ -45,4 +52,8 @@ export const config = {
   maxCrawlDepth: env.MAX_CRAWL_DEPTH,
   outputDir: "output",
   outputFile: "output/latest-crawl.json",
+  persistResults: env.PERSIST_RESULTS,
+  supabaseUrl: env.SUPABASE_URL,
+  supabaseServiceRoleKey: env.SUPABASE_SERVICE_ROLE_KEY,
+  dashboardPort: env.DASHBOARD_PORT,
 } as const;

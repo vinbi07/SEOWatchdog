@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>SEO Watchdog Dashboard</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header>
+    <h1>SEO WATCHDOG</h1>
+    <label>
+      Site:
+      <select id="siteSelect"></select>
+    </label>
+  </header>
+
+  <main id="app">
+    <section id="latestCrawl">
+      <h2>Latest Crawl</h2>
+      <div id="latestCrawlBody">Loading…</div>
+    </section>
+
+    <section id="sinceLastCrawl">
+      <h2>Since Last Crawl</h2>
+      <div id="sinceLastCrawlBody">Loading…</div>
+    </section>
+
+    <section id="recentChanges">
+      <h2>Recent Changes</h2>
+      <div class="filters">
+        <label>
+          Type:
+          <select id="eventTypeFilter">
+            <option value="">All</option>
+          </select>
+        </label>
+        <label>
+          Severity:
+          <select id="severityFilter">
+            <option value="">All</option>
+            <option value="critical">Critical</option>
+            <option value="high">High</option>
+            <option value="medium">Medium</option>
+            <option value="low">Low</option>
+          </select>
+        </label>
+      </div>
+      <table id="changesTable">
+        <thead>
+          <tr><th>Time</th><th>Type</th><th>Severity</th><th>Page</th><th>Change</th></tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </section>
+
+    <section id="currentIssues">
+      <h2>Current Issues</h2>
+      <table id="issuesTable">
+        <thead>
+          <tr><th>Severity</th><th>Page</th><th>Issue</th><th>Message</th></tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </section>
+
+    <section id="pages">
+      <h2>Pages</h2>
+      <div class="filters">
+        <label>
+          Page Type:
+          <select id="pageTypeFilter"><option value="">All</option></select>
+        </label>
+        <label>
+          Indexing State:
+          <select id="indexingStateFilter">
+            <option value="">All</option>
+            <option value="indexable">Indexable</option>
+            <option value="noindex_expected">Noindex Expected</option>
+            <option value="noindex_review">Noindex Review</option>
+            <option value="noindex_unexpected">Noindex Unexpected</option>
+          </select>
+        </label>
+      </div>
+      <table id="pagesTable">
+        <thead>
+          <tr><th>URL</th><th>Page Type</th><th>HTTP</th><th>Indexing State</th><th>Title</th><th>Inbound Links</th><th>Issues</th></tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </section>
+
+    <section id="crawlHistory">
+      <h2>Crawl History</h2>
+      <table id="historyTable">
+        <thead>
+          <tr><th>Date</th><th>Status</th><th>Pages</th><th>Critical</th><th>High</th><th>Medium</th><th>Low</th></tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </section>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>

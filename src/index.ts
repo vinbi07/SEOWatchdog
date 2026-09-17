@@ -8,6 +8,8 @@ import { applyPageRules } from "./rules/rules.js";
 import { findDuplicateIssues } from "./rules/duplicateRules.js";
 import { findCoverageIssues } from "./rules/coverageRules.js";
 import { analyzeIndexingState } from "./indexing/analyzeIndexingState.js";
+import { persistCrawlAndCompare } from "./persistence/persistCrawl.js";
+import { printSinceLastCrawl } from "./history/printSinceLastCrawl.js";
 import type { CrawlReport, CrawlSummary, IndexingSummary, Issue, Severity } from "./types/seo.js";
 
 const SEVERITY_ORDER: Severity[] = ["critical", "high", "medium", "low"];
@@ -148,9 +150,6 @@ function printConsoleSummary(report: CrawlReport): void {
     }
   }
 
-  console.log(`Report saved to:`);
-  console.log(config.outputFile);
-  console.log("");
 }
 
 async function main(): Promise<void> {
@@ -203,10 +202,38 @@ async function main(): Promise<void> {
     pages,
   };
 
+  const persistResult = await persistCrawlAndCompare(report);
+
+  const reportWithHistory = {
+    ...report,
+    comparison:
+      persistResult.comparisonResult?.comparison ??
+      {
+        baseline: true,
+        previousCrawlId: null,
+        newIssues: 0,
+        resolvedIssues: 0,
+        ongoingIssues: 0,
+        newPages: 0,
+        removedPages: 0,
+        changedPages: 0,
+      },
+    changes: persistResult.comparisonResult?.changes ?? [],
+    persistence: {
+      status: persistResult.status,
+      crawlRunId: persistResult.crawlRunId,
+      errorMessage: persistResult.errorMessage,
+    },
+  };
+
   await mkdir(path.dirname(config.outputFile), { recursive: true });
-  await writeFile(config.outputFile, JSON.stringify(report, null, 2), "utf-8");
+  await writeFile(config.outputFile, JSON.stringify(reportWithHistory, null, 2), "utf-8");
 
   printConsoleSummary(report);
+  printSinceLastCrawl(persistResult, config.siteOrigin);
+  console.log(`Report saved to:`);
+  console.log(config.outputFile);
+  console.log("");
 }
 
 main().catch((err) => {
