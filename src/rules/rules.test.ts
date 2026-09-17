@@ -45,11 +45,20 @@ describe("applyPageRules - missing title", () => {
 });
 
 describe("applyPageRules - title length", () => {
-  it("flags a title longer than 60 characters", () => {
+  it("flags a title whose estimated pixel width exceeds the SERP threshold", () => {
     const longTitle = "A".repeat(75);
-    const page = makePage({ title: longTitle, titleLength: longTitle.length });
+    const page = makePage({ title: longTitle, titleLength: longTitle.length, titlePixelWidthEstimate: 900 });
     const issues = applyPageRules(page);
-    expect(issues.some((i) => i.issueType === "title_too_long")).toBe(true);
+    expect(issues.some((i) => i.issueType === "title_pixel_width_high")).toBe(true);
+  });
+
+  it("does not flag a title over 60 characters when its estimated width is still narrow enough", () => {
+    // 62 characters of narrow glyphs (i/l) can render well under the pixel threshold
+    // even though the old character-count-only rule would have flagged it.
+    const narrowTitle = "i".repeat(62);
+    const page = makePage({ title: narrowTitle, titleLength: narrowTitle.length, titlePixelWidthEstimate: 280 });
+    const issues = applyPageRules(page);
+    expect(issues.some((i) => i.issueType === "title_pixel_width_high")).toBe(false);
   });
 
   it("flags a title shorter than 20 characters", () => {
@@ -62,7 +71,7 @@ describe("applyPageRules - title length", () => {
   it("does not flag a title within range", () => {
     const page = makePage();
     const issues = applyPageRules(page);
-    expect(issues.some((i) => i.issueType === "title_too_long" || i.issueType === "title_too_short")).toBe(false);
+    expect(issues.some((i) => i.issueType === "title_pixel_width_high" || i.issueType === "title_too_short")).toBe(false);
   });
 });
 
@@ -186,5 +195,91 @@ describe("findDuplicateIssues - duplicate titles", () => {
     const result = findDuplicateIssues([pageA, pageB]);
 
     expect(result.get(pageA.url)).toBeUndefined();
+  });
+});
+
+describe("applyPageRules - HTML document hygiene", () => {
+  it("flags a missing charset", () => {
+    const page = makePage({ charset: null });
+    expect(applyPageRules(page).some((i) => i.issueType === "missing_charset")).toBe(true);
+  });
+
+  it("does not flag a page with a declared charset", () => {
+    const page = makePage({ charset: "UTF-8" });
+    expect(applyPageRules(page).some((i) => i.issueType === "missing_charset")).toBe(false);
+  });
+
+  it("flags a missing HTML5 doctype", () => {
+    const page = makePage({ hasHtml5Doctype: false });
+    expect(applyPageRules(page).some((i) => i.issueType === "missing_doctype")).toBe(true);
+  });
+
+  it("does not flag a page with an HTML5 doctype", () => {
+    const page = makePage({ hasHtml5Doctype: true });
+    expect(applyPageRules(page).some((i) => i.issueType === "missing_doctype")).toBe(false);
+  });
+});
+
+describe("applyPageRules - mixed content", () => {
+  it("flags mixed content as high severity", () => {
+    const page = makePage({ mixedContentCount: 2, mixedContentSamples: ["http://insecure.example.com/a.js"] });
+    const issue = applyPageRules(page).find((i) => i.issueType === "mixed_content");
+    expect(issue).toBeDefined();
+    expect(issue?.severity).toBe("high");
+  });
+
+  it("does not flag a page with no mixed content", () => {
+    const page = makePage({ mixedContentCount: 0 });
+    expect(applyPageRules(page).some((i) => i.issueType === "mixed_content")).toBe(false);
+  });
+});
+
+describe("applyPageRules - server compression", () => {
+  it("flags a large uncompressed HTML response", () => {
+    const page = makePage({ compressionEncoding: null, htmlSizeBytes: 200_000 });
+    expect(applyPageRules(page).some((i) => i.issueType === "html_response_uncompressed")).toBe(true);
+  });
+
+  it("does not flag a tiny uncompressed HTML response", () => {
+    const page = makePage({ compressionEncoding: null, htmlSizeBytes: 500 });
+    expect(applyPageRules(page).some((i) => i.issueType === "html_response_uncompressed")).toBe(false);
+  });
+
+  it("does not flag a large gzip-compressed response", () => {
+    const page = makePage({ compressionEncoding: "gzip", htmlSizeBytes: 200_000 });
+    expect(applyPageRules(page).some((i) => i.issueType === "html_response_uncompressed")).toBe(false);
+  });
+
+  it("does not flag a large brotli-compressed response", () => {
+    const page = makePage({ compressionEncoding: "br", htmlSizeBytes: 200_000 });
+    expect(applyPageRules(page).some((i) => i.issueType === "html_response_uncompressed")).toBe(false);
+  });
+});
+
+describe("applyPageRules - response header hygiene", () => {
+  it("flags an exposed X-Powered-By header", () => {
+    const page = makePage({
+      serverHeaders: { server: null, xPoweredBy: "Express", contentType: null, cacheControl: null, contentSecurityPolicy: null, strictTransportSecurity: null },
+    });
+    expect(applyPageRules(page).some((i) => i.issueType === "x_powered_by_exposed")).toBe(true);
+  });
+
+  it("does not flag when X-Powered-By is absent", () => {
+    const page = makePage({
+      serverHeaders: { server: null, xPoweredBy: null, contentType: null, cacheControl: null, contentSecurityPolicy: null, strictTransportSecurity: null },
+    });
+    expect(applyPageRules(page).some((i) => i.issueType === "x_powered_by_exposed")).toBe(false);
+  });
+});
+
+describe("applyPageRules - duplicate visible content", () => {
+  it("flags repeated content blocks", () => {
+    const page = makePage({ duplicateContentSamples: [{ text: "Book Paden Sickles for your next event.", occurrences: 2 }] });
+    expect(applyPageRules(page).some((i) => i.issueType === "duplicate_visible_content")).toBe(true);
+  });
+
+  it("does not flag a page with no duplicate content", () => {
+    const page = makePage({ duplicateContentSamples: [] });
+    expect(applyPageRules(page).some((i) => i.issueType === "duplicate_visible_content")).toBe(false);
   });
 });

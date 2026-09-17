@@ -20,6 +20,11 @@ export interface PreviousPageRecord {
   sourceDiscovered: boolean;
   internalInboundLinkCount: number;
   structuredDataTypes: string[];
+  /** Step 2.6 fields — null for snapshots taken before they existed (historical compatibility). */
+  htmlSizeBytes: number | null;
+  responseTimeMs: number | null;
+  internalLinkCount: number | null;
+  externalLinkCount: number | null;
 }
 
 /** Minimal read of a previously persisted issue snapshot, used only for comparison. */
@@ -48,7 +53,10 @@ export type ChangeEventType =
   | "page_became_discovered"
   | "page_no_longer_discovered"
   | "http_status_changed"
-  | "canonical_changed";
+  | "canonical_changed"
+  | "html_size_changed"
+  | "response_time_changed"
+  | "link_count_changed";
 
 export interface ChangeEvent {
   eventType: ChangeEventType;

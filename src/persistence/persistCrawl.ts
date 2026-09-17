@@ -3,6 +3,7 @@ import * as repo from "../db/seoRepository.js";
 import { getSupabaseClient, isSupabaseConfigured } from "../db/supabaseClient.js";
 import { compareCrawls, type PreviousCrawlData } from "../history/compareCrawls.js";
 import type { CrawlComparisonResult } from "../history/types.js";
+import { calculateSeoScore } from "../scoring/index.js";
 import type { CrawlReport } from "../types/seo.js";
 import { logger } from "../utils/logger.js";
 
@@ -49,15 +50,21 @@ export async function persistCrawlAndCompare(report: CrawlReport): Promise<Persi
 
     const previousRun = await repo.getPreviousSuccessfulCrawlRun(client, site.id, crawlRunId);
     let previousData: PreviousCrawlData | null = null;
+    let previousScore: number | null = null;
     if (previousRun) {
-      const [pages, issues] = await Promise.all([
+      const [pages, issues, prevScoreSnapshot] = await Promise.all([
         repo.getPreviousPageSnapshots(client, previousRun.id),
         repo.getPreviousIssueSnapshots(client, previousRun.id),
+        repo.getScoreSnapshotForCrawlRun(client, previousRun.id),
       ]);
       previousData = { crawlRunId: previousRun.id, pages, issues };
+      previousScore = prevScoreSnapshot?.overall_score ?? null;
     }
 
     const comparisonResult = compareCrawls(report.pages, previousData);
+
+    const score = calculateSeoScore(report, previousScore ?? undefined);
+    await repo.insertScoreSnapshot(client, site.id, crawlRunId, score);
 
     await repo.insertChangeEvents(client, site.id, crawlRunId, previousData?.crawlRunId ?? null, comparisonResult.changes);
     await repo.finishCrawlRun(client, crawlRunId, {

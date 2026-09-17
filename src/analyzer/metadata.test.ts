@@ -1,13 +1,6 @@
 import * as cheerio from "cheerio";
 import { describe, expect, it } from "vitest";
-import {
-  extractCanonical,
-  extractHeadings,
-  extractImageStats,
-  extractMetaDescription,
-  extractRobotsMeta,
-  extractTitle,
-} from "./metadata.js";
+import { extractCanonical, extractImageStats, extractMetaDescription, extractRobotsMeta, extractTitle } from "./metadata.js";
 
 describe("extractTitle", () => {
   it("returns the trimmed title text", () => {
@@ -58,21 +51,6 @@ describe("extractRobotsMeta", () => {
     const result = extractRobotsMeta($);
     expect(result.noindex).toBe(false);
     expect(result.raw).toBeNull();
-  });
-});
-
-describe("extractHeadings", () => {
-  it("counts H1 and H2 elements and captures H1 text", () => {
-    const $ = cheerio.load("<html><body><h1>Main</h1><h2>Sub</h2><h2>Sub 2</h2></body></html>");
-    const result = extractHeadings($);
-    expect(result.h1).toEqual(["Main"]);
-    expect(result.h1Count).toBe(1);
-    expect(result.h2Count).toBe(2);
-  });
-
-  it("detects multiple H1s", () => {
-    const $ = cheerio.load("<html><body><h1>One</h1><h1>Two</h1></body></html>");
-    expect(extractHeadings($).h1Count).toBe(2);
   });
 });
 

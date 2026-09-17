@@ -1,6 +1,9 @@
 import type { Issue, PageResult } from "../types/seo.js";
 import { config } from "../config/config.js";
 import { thresholds } from "./thresholds.js";
+import { findAnchorIssues } from "./anchorRules.js";
+import { findHeadingIssues } from "./headingRules.js";
+import { findHreflangIssues } from "./hreflangRules.js";
 
 function makeIssue(page: PageResult, partial: Omit<Issue, "url">): Issue {
   return { ...partial, url: page.url };
@@ -95,14 +98,19 @@ export function applyPageRules(page: PageResult): Issue[] {
   } else {
     const titleSeverity = thresholds.titleLengthMediumSeverityPageTypes.includes(page.pageType) ? "medium" : "low";
 
-    if (page.titleLength > thresholds.title.maxLength) {
+    // Rendered-width estimate is the primary heuristic for "too long" — a
+    // 62-character title with narrow glyphs can still fit a SERP, while a
+    // shorter title full of wide capitals may not. Character count alone
+    // (the old `title_too_long` rule) is too crude and is intentionally not
+    // used for this check anymore; see thresholds.title.maxPixelWidth.
+    if (page.titlePixelWidthEstimate !== null && page.titlePixelWidthEstimate > thresholds.title.maxPixelWidth) {
       issues.push(
         makeIssue(page, {
-          issueType: "title_too_long",
-          severity: titleSeverity,
-          message: `Title is ${page.titleLength} characters and may be truncated in some search result layouts.`,
-          recommendation: `Consider tightening the title to around ${thresholds.title.maxLength} characters or fewer.`,
-          value: page.titleLength,
+          issueType: "title_pixel_width_high",
+          severity: "low",
+          message: `Estimated title width (~${page.titlePixelWidthEstimate}px) may exceed typical desktop search result display width (~${thresholds.title.maxPixelWidth}px).`,
+          recommendation: "Shorten the title or use narrower wording so it's less likely to be truncated in search results.",
+          value: { pixelWidthEstimate: page.titlePixelWidthEstimate, titleLength: page.titleLength },
         })
       );
     }
@@ -166,14 +174,17 @@ export function applyPageRules(page: PageResult): Issue[] {
         recommendation: "Add a unique meta description under 160 characters summarizing the page.",
       })
     );
-  } else if (page.metaDescriptionLength > thresholds.metaDescription.maxLength) {
+  } else if (
+    page.metaDescriptionPixelWidthEstimate !== null &&
+    page.metaDescriptionPixelWidthEstimate > thresholds.metaDescription.maxPixelWidth
+  ) {
     issues.push(
       makeIssue(page, {
-        issueType: "meta_description_too_long",
-        severity: "medium",
-        message: `Meta description is ${page.metaDescriptionLength} characters, longer than the recommended ${thresholds.metaDescription.maxLength}.`,
-        recommendation: "Shorten the meta description so it is not truncated in search results.",
-        value: page.metaDescriptionLength,
+        issueType: "meta_description_pixel_width_high",
+        severity: "low",
+        message: `Estimated meta description width (~${page.metaDescriptionPixelWidthEstimate}px) may exceed typical desktop search result display width (~${thresholds.metaDescription.maxPixelWidth}px).`,
+        recommendation: "Shorten the meta description so it's less likely to be truncated in search results.",
+        value: { pixelWidthEstimate: page.metaDescriptionPixelWidthEstimate, length: page.metaDescriptionLength },
       })
     );
   }
@@ -298,6 +309,96 @@ export function applyPageRules(page: PageResult): Issue[] {
         })
       );
     }
+  }
+
+  // --- Heading quality (Step 2.6) ----------------------------------------
+  for (const issue of findHeadingIssues(page.headings, page.wordCount, page.url)) {
+    issues.push(issue);
+  }
+
+  // --- Anchor quality (Step 2.6) ------------------------------------------
+  for (const issue of findAnchorIssues(page.anchorMetrics, page.url)) {
+    issues.push(issue);
+  }
+
+  // --- Duplicate visible content (Step 2.6) --------------------------------
+  if (page.duplicateContentSamples.length > 0) {
+    issues.push(
+      makeIssue(page, {
+        issueType: "duplicate_visible_content",
+        severity: page.duplicateContentSamples.length >= thresholds.duplicateContent.mediumSeverityGroupCount ? "medium" : "low",
+        message: `Page repeats ${page.duplicateContentSamples.length} visible text block(s) (e.g. paragraph, CTA, or description copy) more than once.`,
+        recommendation: "Check whether repeated content blocks are intentional (e.g. a shared component) or accidental duplication.",
+        value: page.duplicateContentSamples,
+      })
+    );
+  }
+
+  // --- HTML document hygiene (Step 2.6) ------------------------------------
+  if (!page.charset) {
+    issues.push(
+      makeIssue(page, {
+        issueType: "missing_charset",
+        severity: "low",
+        message: "Page does not declare a character encoding.",
+        recommendation: 'Add a <meta charset="UTF-8"> tag (or equivalent) near the top of <head>.',
+      })
+    );
+  }
+  if (!page.hasHtml5Doctype) {
+    issues.push(
+      makeIssue(page, {
+        issueType: "missing_doctype",
+        severity: "low",
+        message: "Page does not start with an HTML5 doctype declaration.",
+        recommendation: "Add <!DOCTYPE html> as the first line of the document.",
+      })
+    );
+  }
+
+  // --- HTTPS / mixed content (Step 2.6) ------------------------------------
+  if (page.mixedContentCount > 0) {
+    issues.push(
+      makeIssue(page, {
+        issueType: "mixed_content",
+        severity: "high",
+        message: `${page.mixedContentCount} resource(s) are loaded over plain HTTP on this HTTPS page.`,
+        recommendation: "Update these resource URLs to HTTPS (or protocol-relative/relative URLs) to avoid mixed-content warnings and blocked resources.",
+        value: page.mixedContentSamples,
+      })
+    );
+  }
+
+  // --- Server compression (Step 2.6) ---------------------------------------
+  const isUncompressed = !page.compressionEncoding || page.compressionEncoding === "identity" || page.compressionEncoding === "none";
+  if (isUncompressed && page.htmlSizeBytes >= thresholds.htmlResponse.minSizeForCompressionCheckBytes) {
+    issues.push(
+      makeIssue(page, {
+        issueType: "html_response_uncompressed",
+        severity: "low",
+        message: `HTML response (${Math.round(page.htmlSizeBytes / 1024)} KB) was served without compression (content-encoding: ${page.compressionEncoding ?? "none"}).`,
+        recommendation: "Enable gzip or brotli compression on the server for HTML responses.",
+        value: { htmlSizeBytes: page.htmlSizeBytes, compressionEncoding: page.compressionEncoding },
+      })
+    );
+  }
+
+  // --- Response header hygiene (Step 2.6) -----------------------------------
+  if (page.serverHeaders.xPoweredBy) {
+    issues.push(
+      makeIssue(page, {
+        issueType: "x_powered_by_exposed",
+        severity: "low",
+        message: `Server exposes an X-Powered-By header ("${page.serverHeaders.xPoweredBy}").`,
+        recommendation: "Consider removing the X-Powered-By header as routine operational/security hygiene (this does not directly affect rankings).",
+        value: page.serverHeaders.xPoweredBy,
+      })
+    );
+  }
+
+  // --- Hreflang / alternate links (Step 2.6) ---------------------------------
+  for (const issue of findHreflangIssues(page.alternateLinks, page.url)) {
+    issues.push(issue);
   }
 
   return issues;

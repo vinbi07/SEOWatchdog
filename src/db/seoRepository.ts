@@ -2,6 +2,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import { buildIssueKey } from "../history/issueKey.js";
 import { normalizeUrlForComparison } from "../history/normalizeForComparison.js";
 import type { ChangeEvent, PreviousIssueRecord, PreviousPageRecord } from "../history/types.js";
+import type { ScoreResult } from "../scoring/index.js";
 import type { CrawlReport, PageResult } from "../types/seo.js";
 
 export type CrawlRunStatus = "running" | "success" | "partial" | "failed";
@@ -96,6 +97,8 @@ export async function finishCrawlRun(client: SupabaseClient, crawlRunId: string,
       noindex_expected_count: report.indexing.noindexExpected,
       noindex_review_count: report.indexing.noindexReview,
       noindex_unexpected_count: report.indexing.noindexUnexpected,
+      preferred_host: report.hostCanonicalization?.preferredHost ?? null,
+      www_redirect_status: report.hostCanonicalization?.wwwRedirectStatus ?? null,
       error_message: input.errorMessage ?? null,
     })
     .eq("id", crawlRunId);
@@ -162,6 +165,25 @@ function pageSnapshotRow(siteId: string, crawlRunId: string, page: PageResult) {
     open_graph: page.openGraph,
     twitter: page.twitter,
     robots_meta: page.robotsMeta,
+
+    // Step 2.6: audit depth expansion (all additive columns; see
+    // supabase/migrations/0003_seo_watchdog_audit_depth.sql).
+    html_size_bytes: page.htmlSizeBytes,
+    charset: page.charset,
+    has_html5_doctype: page.hasHtml5Doctype,
+    compression_encoding: page.compressionEncoding,
+    internal_link_count: page.anchorMetrics.internalLinkCount,
+    unique_internal_link_count: page.anchorMetrics.uniqueInternalLinkCount,
+    external_link_count: page.anchorMetrics.externalLinkCount,
+    unique_external_link_count: page.anchorMetrics.uniqueExternalLinkCount,
+    title_pixel_width_estimate: page.titlePixelWidthEstimate,
+    meta_description_pixel_width_estimate: page.metaDescriptionPixelWidthEstimate,
+    mixed_content_count: page.mixedContentCount,
+    alternate_links: page.alternateLinks,
+    headings: page.headings,
+    anchor_metrics: page.anchorMetrics,
+    server_headers: page.serverHeaders,
+    duplicate_content_samples: page.duplicateContentSamples,
   };
 }
 
@@ -243,7 +265,7 @@ export async function getPreviousPageSnapshots(client: SupabaseClient, crawlRunI
   const { data, error } = await client
     .from("seo_page_snapshots")
     .select(
-      "url, normalized_url, final_url, status_code, title, meta_description, canonical, h1_count, word_count, noindex, is_indexable, indexing_state, publication_state, page_type, source_sitemap, source_discovered, internal_inbound_link_count, structured_data"
+      "url, normalized_url, final_url, status_code, title, meta_description, canonical, h1_count, word_count, noindex, is_indexable, indexing_state, publication_state, page_type, source_sitemap, source_discovered, internal_inbound_link_count, structured_data, response_time_ms, html_size_bytes, internal_link_count, external_link_count"
     )
     .eq("crawl_run_id", crawlRunId);
 
@@ -270,6 +292,11 @@ export async function getPreviousPageSnapshots(client: SupabaseClient, crawlRunI
     structuredDataTypes: Array.isArray(row.structured_data)
       ? (row.structured_data as Array<{ type: string }>).map((entry) => entry.type)
       : [],
+    // Step 2.6 fields — null on rows persisted before they existed.
+    htmlSizeBytes: row.html_size_bytes ?? null,
+    responseTimeMs: row.response_time_ms ?? null,
+    internalLinkCount: row.internal_link_count ?? null,
+    externalLinkCount: row.external_link_count ?? null,
   }));
 }
 
@@ -316,4 +343,80 @@ export async function insertChangeEvents(
 
   const { error } = await client.from("seo_change_events").insert(rows);
   if (error) throw new Error(`Failed to insert seo_change_events rows: ${error.message}`);
+}
+
+export interface ScoreSnapshotRow {
+  overall_score: number;
+  overall_score_raw: number;
+  technical_score: number;
+  on_page_score: number;
+  content_score: number;
+  internal_linking_score: number;
+  indexing_score: number;
+  performance_score: number;
+  safety_cap_applied: string | null;
+  score_breakdown: unknown;
+}
+
+function scoreSnapshotRow(siteId: string, crawlRunId: string, score: ScoreResult) {
+  return {
+    crawl_run_id: crawlRunId,
+    site_id: siteId,
+    overall_score: score.overallScore,
+    overall_score_raw: score.overallScoreRaw,
+    // Category columns are integer; finalScore can be fractional (penalties/bonuses
+    // aren't whole numbers) — full precision is preserved in score_breakdown below.
+    technical_score: Math.round(score.categories.technical.finalScore),
+    on_page_score: Math.round(score.categories.onPage.finalScore),
+    content_score: Math.round(score.categories.content.finalScore),
+    internal_linking_score: Math.round(score.categories.internalLinks.finalScore),
+    indexing_score: Math.round(score.categories.indexing.finalScore),
+    performance_score: Math.round(score.categories.performance.finalScore),
+    safety_cap_applied: score.safetyCapApplied,
+    score_breakdown: score.categories,
+  };
+}
+
+/** Inserts (or, with opts.force, upserts) one score snapshot row per crawl run. crawl_run_id is unique, so a plain insert is naturally idempotent-safe against accidental double calls. */
+export async function insertScoreSnapshot(
+  client: SupabaseClient,
+  siteId: string,
+  crawlRunId: string,
+  score: ScoreResult,
+  opts?: { force?: boolean }
+): Promise<void> {
+  const row = scoreSnapshotRow(siteId, crawlRunId, score);
+
+  const { error } = opts?.force
+    ? await client.from("seo_score_snapshots").upsert(row, { onConflict: "crawl_run_id" })
+    : await client.from("seo_score_snapshots").insert(row);
+
+  if (error) throw new Error(`Failed to insert seo_score_snapshots row: ${error.message}`);
+}
+
+export async function getScoreSnapshotForCrawlRun(client: SupabaseClient, crawlRunId: string): Promise<ScoreSnapshotRow | null> {
+  const { data, error } = await client
+    .from("seo_score_snapshots")
+    .select(
+      "overall_score, overall_score_raw, technical_score, on_page_score, content_score, internal_linking_score, indexing_score, performance_score, safety_cap_applied, score_breakdown"
+    )
+    .eq("crawl_run_id", crawlRunId)
+    .maybeSingle();
+
+  if (error) throw new Error(`Failed to query seo_score_snapshots: ${error.message}`);
+  return data ?? null;
+}
+
+export async function getScoreHistory(client: SupabaseClient, siteId: string, limit = 30): Promise<ScoreSnapshotRow[]> {
+  const { data, error } = await client
+    .from("seo_score_snapshots")
+    .select(
+      "overall_score, overall_score_raw, technical_score, on_page_score, content_score, internal_linking_score, indexing_score, performance_score, safety_cap_applied, score_breakdown, created_at, crawl_run_id"
+    )
+    .eq("site_id", siteId)
+    .order("created_at", { ascending: false })
+    .limit(limit);
+
+  if (error) throw new Error(`Failed to query seo_score_snapshots history: ${error.message}`);
+  return data ?? [];
 }

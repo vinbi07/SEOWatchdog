@@ -210,3 +210,34 @@ export async function getLatestPageByUrl(client: SupabaseClient, siteId: string,
   if (error) throw new Error(error.message);
   return data;
 }
+
+/**
+ * The score snapshot for one crawl run, or null when this crawl predates
+ * Step 2.7 (or scores:backfill hasn't run yet for it) — a missing score is
+ * "not calculated for this crawl", never an error.
+ */
+export async function getScoreSnapshotForCrawlRun(client: SupabaseClient, crawlRunId: string) {
+  const { data, error } = await client
+    .from("seo_score_snapshots")
+    .select(
+      "overall_score, overall_score_raw, technical_score, on_page_score, content_score, internal_linking_score, indexing_score, performance_score, safety_cap_applied, score_breakdown, created_at"
+    )
+    .eq("crawl_run_id", crawlRunId)
+    .maybeSingle();
+  if (error) throw new Error(error.message);
+  return data;
+}
+
+/** Recent score snapshots for a site, most recent first — powers the score trend sparkline. */
+export async function getScoreHistory(client: SupabaseClient, siteId: string, limit = 30) {
+  const { data, error } = await client
+    .from("seo_score_snapshots")
+    .select(
+      "crawl_run_id, overall_score, overall_score_raw, technical_score, on_page_score, content_score, internal_linking_score, indexing_score, performance_score, created_at"
+    )
+    .eq("site_id", siteId)
+    .order("created_at", { ascending: false })
+    .limit(limit);
+  if (error) throw new Error(error.message);
+  return data ?? [];
+}

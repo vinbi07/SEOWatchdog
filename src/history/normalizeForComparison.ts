@@ -63,3 +63,53 @@ export function internalInboundLinkCountChangedSignificantly(previous: number, c
   if (previous === 0 && current > 0) return true;
   return Math.abs(current - previous) >= INTERNAL_LINK_COUNT_NOISE_THRESHOLD;
 }
+
+const LINK_COUNT_ABSOLUTE_THRESHOLD = 10;
+const LINK_COUNT_PERCENT_THRESHOLD = 0.4;
+
+/**
+ * General-purpose internal/external outbound link count comparison (Step
+ * 2.6): a page's link count only "changes" for reporting when it moves by
+ * >=10 absolute or >=40% relative, or crosses into/out of zero — a couple
+ * of links added/removed shouldn't spam the timeline. `previous`/`current`
+ * may be null (field didn't exist on older snapshots); a null on either
+ * side is never treated as a change.
+ */
+export function linkCountChangedSignificantly(previous: number | null, current: number | null): boolean {
+  if (previous === null || current === null) return false;
+  if (previous > 0 && current === 0) return true;
+  if (previous === 0 && current > 0) return true;
+  const absoluteDelta = Math.abs(current - previous);
+  if (absoluteDelta >= LINK_COUNT_ABSOLUTE_THRESHOLD) return true;
+  if (previous === 0) return false;
+  return absoluteDelta / previous >= LINK_COUNT_PERCENT_THRESHOLD;
+}
+
+const HTML_SIZE_ABSOLUTE_THRESHOLD_BYTES = 100 * 1024;
+const HTML_SIZE_PERCENT_THRESHOLD = 0.5;
+
+/** HTML payload size only "changes" for reporting past >=100KB absolute or >=50% relative (Step 2.6). */
+export function htmlSizeChangedSignificantly(previous: number | null, current: number | null): boolean {
+  if (previous === null || current === null) return false;
+  const absoluteDelta = Math.abs(current - previous);
+  if (absoluteDelta >= HTML_SIZE_ABSOLUTE_THRESHOLD_BYTES) return true;
+  if (previous === 0) return false;
+  return absoluteDelta / previous >= HTML_SIZE_PERCENT_THRESHOLD;
+}
+
+const RESPONSE_TIME_ABSOLUTE_THRESHOLD_MS = 1000;
+const RESPONSE_TIME_PERCENT_THRESHOLD = 0.5;
+
+/**
+ * Response time is noisy by nature (network variability), so this requires
+ * BOTH a large absolute change (>=1s) AND a large relative one (>=50%)
+ * before it's worth surfacing — a normal fluctuation should never appear
+ * in the timeline.
+ */
+export function responseTimeChangedSignificantly(previous: number | null, current: number | null): boolean {
+  if (previous === null || current === null) return false;
+  const absoluteDelta = Math.abs(current - previous);
+  if (absoluteDelta < RESPONSE_TIME_ABSOLUTE_THRESHOLD_MS) return false;
+  if (previous === 0) return false;
+  return absoluteDelta / previous >= RESPONSE_TIME_PERCENT_THRESHOLD;
+}

@@ -4,6 +4,16 @@ import { normalizeUrl } from "../utils/urls.js";
 
 const MAX_REDIRECTS = 10;
 
+/** Axios already lowercases header names; this just flattens any multi-value headers to a single string. */
+function normalizeHeaders(raw: Record<string, unknown>): Record<string, string> {
+  const headers: Record<string, string> = {};
+  for (const [key, value] of Object.entries(raw)) {
+    if (value === undefined || value === null) continue;
+    headers[key] = Array.isArray(value) ? value.join(", ") : String(value);
+  }
+  return headers;
+}
+
 export interface FetchResult {
   requestedUrl: string;
   finalUrl: string;
@@ -11,6 +21,8 @@ export interface FetchResult {
   redirectCount: number;
   responseTimeMs: number;
   html: string | null;
+  /** The final (non-redirect) response's headers, lowercased keys — empty for network_error outcomes. */
+  headers: Record<string, string>;
   outcome: "ok" | "http_error" | "network_error";
   errorMessage?: string;
 }
@@ -37,6 +49,7 @@ export async function fetchPage(url: string): Promise<FetchResult> {
           redirectCount,
           responseTimeMs: Date.now() - start,
           html: null,
+          headers: {},
           outcome: "network_error",
           errorMessage: "Redirect loop detected",
         };
@@ -65,6 +78,7 @@ export async function fetchPage(url: string): Promise<FetchResult> {
             redirectCount,
             responseTimeMs: Date.now() - start,
             html: null,
+            headers: {},
             outcome: "network_error",
             errorMessage: "Too many redirects",
           };
@@ -78,6 +92,7 @@ export async function fetchPage(url: string): Promise<FetchResult> {
             redirectCount,
             responseTimeMs: Date.now() - start,
             html: null,
+            headers: {},
             outcome: "network_error",
             errorMessage: `Invalid redirect location: ${res.headers.location}`,
           };
@@ -94,6 +109,7 @@ export async function fetchPage(url: string): Promise<FetchResult> {
         redirectCount,
         responseTimeMs: Date.now() - start,
         html: typeof res.data === "string" ? res.data : null,
+        headers: normalizeHeaders(res.headers as Record<string, unknown>),
         outcome,
       };
     }
@@ -113,6 +129,7 @@ export async function fetchPage(url: string): Promise<FetchResult> {
       redirectCount,
       responseTimeMs: Date.now() - start,
       html: null,
+      headers: {},
       outcome: "network_error",
       errorMessage: message,
     };

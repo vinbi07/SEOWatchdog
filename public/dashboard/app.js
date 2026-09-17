@@ -134,9 +134,9 @@ async function loadMeta() {
 // --- Status + Latest Health + Since Last Crawl ---------------------------
 
 const STATUS_COPY = {
-  critical: { label: "Critical", tone: "critical" },
-  needs_attention: { label: "Needs Attention", tone: "high" },
-  healthy: { label: "Healthy", tone: "healthy" },
+  critical: { label: "● DEGRADED", tone: "critical" },
+  needs_attention: { label: "● WARNING", tone: "high" },
+  healthy: { label: "● STABLE", tone: "healthy" },
 };
 
 async function loadLatestCrawl() {
@@ -154,12 +154,15 @@ async function loadLatestCrawl() {
   }
 
   try {
-    const { crawlRun, sinceLastCrawl, status, freshness } = await fetchJson(`/api/latest-crawl?siteId=${state.siteId}`);
+    const { crawlRun, sinceLastCrawl, status, freshness, score } = await fetchJson(`/api/latest-crawl?siteId=${state.siteId}`);
+
+    renderHeroScore(score);
+    renderCategoryTiles(score);
 
     if (!crawlRun) {
       statusEl.innerHTML = "";
-      healthEl.innerHTML = emptyState("Run an audit to establish the first baseline.");
-      sinceEl.innerHTML = emptyState("Run an audit to establish the first baseline.");
+      healthEl.innerHTML = emptyState("NO PRIOR SCAN DATA. Run an audit to establish the first baseline.");
+      sinceEl.innerHTML = emptyState("NO PRIOR SCAN DATA. Run an audit to establish the first baseline.");
       freshnessEl.textContent = "—";
       return null;
     }
@@ -168,8 +171,8 @@ async function loadLatestCrawl() {
     statusEl.innerHTML = `<div class="status-banner tone-${statusCopy.tone}">${esc(statusCopy.label)}</div>`;
 
     freshnessEl.innerHTML = freshness
-      ? `Last crawled: <strong>${esc(timeAgo(freshness.minutesAgo))}</strong> (${esc(fmtDate(crawlRun.finished_at ?? crawlRun.started_at))})${
-          freshness.isStale ? ` <span class="stale-badge">Stale Data</span>` : ""
+      ? `LAST SCAN: <strong>${esc(timeAgo(freshness.minutesAgo))}</strong> (${esc(fmtDate(crawlRun.finished_at ?? crawlRun.started_at))})${
+          freshness.isStale ? ` <span class="stale-badge">STALE DATA</span>` : ""
         }`
       : "—";
 
@@ -197,7 +200,7 @@ async function loadLatestCrawl() {
       const totalMeaningful =
         sinceLastCrawl.newIssues + sinceLastCrawl.resolvedIssues + sinceLastCrawl.newPages + sinceLastCrawl.removedPages + sinceLastCrawl.changedPages;
       if (totalMeaningful === 0) {
-        sinceEl.innerHTML = emptyState("No meaningful SEO changes were detected since the previous crawl.");
+        sinceEl.innerHTML = emptyState("SYSTEM STABLE. No meaningful changes since previous scan.");
       } else {
         sinceEl.innerHTML = `
           <div class="cards since-cards">
@@ -217,6 +220,8 @@ async function loadLatestCrawl() {
     healthEl.innerHTML = errorState(`Unable to load the latest crawl: ${err.message}`);
     sinceEl.innerHTML = errorState("Unable to load Since Last Crawl.");
     freshnessEl.textContent = "—";
+    renderHeroScore(null);
+    renderCategoryTiles(null);
     return null;
   }
 }
@@ -296,7 +301,7 @@ async function loadChanges() {
     }
 
     if (changes.length === 0) {
-      body.innerHTML = emptyState("No meaningful SEO changes were detected since the previous crawl.");
+      body.innerHTML = emptyState("SYSTEM STABLE. No meaningful changes since previous scan.");
       return;
     }
 
@@ -405,7 +410,7 @@ function renderIssues() {
   });
 
   if (state.issues.length === 0) {
-    body.innerHTML = emptyState("No critical issues detected.");
+    body.innerHTML = emptyState("NO ACTIVE CRITICAL ANOMALIES.");
     return;
   }
   if (filtered.length === 0) {
@@ -635,29 +640,97 @@ function structuredDataBadges(page) {
   `;
 }
 
+const NOT_RECORDED = `<span class="muted">Not recorded</span>`;
+
+function recorded(value, formatter) {
+  return value === null || value === undefined ? NOT_RECORDED : formatter(value);
+}
+
+function widthStatus(estimate, max) {
+  if (estimate === null || estimate === undefined) return "";
+  return estimate > max ? ` — <span class="tone-high-text">may exceed typical display width</span>` : ` — <span class="tone-ok-text">within typical display range</span>`;
+}
+
+function headingsList(headings) {
+  if (!headings || headings.length === 0) return emptyState("No headings found.");
+  return `<ul class="mini-list headings-list">${headings
+    .map((h) => `<li style="padding-left:${(h.level - 1) * 14}px"><span class="heading-level">H${esc(h.level)}</span> ${esc(h.text)}</li>`)
+    .join("")}</ul>`;
+}
+
+function duplicateContentDisplay(samples) {
+  if (!samples || samples.length === 0) return emptyState("No repeated content blocks detected.");
+  return `
+    <p>Detected ${samples.length} repeated text block${samples.length === 1 ? "" : "s"}.</p>
+    <details class="collapsible">
+      <summary>View samples</summary>
+      <ul class="mini-list">${samples.map((s) => `<li>"${esc(s.text)}" <span class="muted">(${esc(s.occurrences)}×)</span></li>`).join("")}</ul>
+    </details>
+  `;
+}
+
 async function openPageDetail(url) {
   openDialog("Page Detail", `<p>Loading…</p>`);
   try {
-    const { page, issues, changes } = await fetchJson(`/api/page-detail?siteId=${state.siteId}&url=${encodeURIComponent(url)}`);
+    const { page, issues, changes, preferredHost } = await fetchJson(`/api/page-detail?siteId=${state.siteId}&url=${encodeURIComponent(url)}`);
+    const hasTechnicalDetails = page.html_size_bytes !== null && page.html_size_bytes !== undefined;
+
     detailDialogBody.innerHTML = `
       <dl class="detail-list">
         <dt>URL</dt><dd><a href="${esc(page.url)}" target="_blank" rel="noopener noreferrer">${esc(page.url)}</a></dd>
         <dt>Final URL</dt><dd>${esc(page.final_url ?? page.url)}</dd>
         <dt>HTTP Status</dt><dd>${esc(page.status_code ?? "—")}</dd>
-        <dt>Response Time</dt><dd>${page.response_time_ms ? `${esc(page.response_time_ms)} ms` : "—"}</dd>
+        <dt>Response Time</dt><dd>${page.response_time_ms ? `${esc(page.response_time_ms)} ms (HTML response time)` : "—"}</dd>
         <dt>Page Type</dt><dd>${esc(labelFor(PAGE_TYPE_LABELS, page.page_type))}</dd>
         <dt>Indexing State</dt><dd>${indexingBadge(page.indexing_state)}</dd>
         <dt>Publication State</dt><dd>${esc(page.publication_state)}</dd>
-        <dt>Title</dt><dd>${esc(page.title ?? "—")}</dd>
-        <dt>Meta Description</dt><dd>${esc(page.meta_description ?? "—")}</dd>
+
+        <dt>Title</dt><dd>
+          ${esc(page.title ?? "—")}
+          ${page.title ? `<div class="muted">Characters: ${esc(page.title.length)} · Estimated Width: ${recorded(page.title_pixel_width_estimate, (v) => `${esc(v)} px`)}${widthStatus(page.title_pixel_width_estimate, 600)}</div>` : ""}
+        </dd>
+        <dt>Meta Description</dt><dd>
+          ${esc(page.meta_description ?? "—")}
+          ${page.meta_description ? `<div class="muted">Characters: ${esc(page.meta_description.length)} · Estimated Width: ${recorded(page.meta_description_pixel_width_estimate, (v) => `${esc(v)} px`)}${widthStatus(page.meta_description_pixel_width_estimate, 950)}</div>` : ""}
+        </dd>
         <dt>Canonical</dt><dd>${esc(page.canonical ?? "—")}</dd>
-        <dt>H1 / H2 Count</dt><dd>${esc(page.h1_count)} / ${esc(page.h2_count)}</dd>
-        <dt>Word Count</dt><dd>${esc(page.word_count)}</dd>
-        <dt>Inbound / Outbound Links</dt><dd>${esc(page.internal_inbound_link_count)} / ${esc(page.internal_outbound_link_count)}</dd>
         <dt>Images</dt><dd>${esc(page.image_count)} total, ${esc(page.images_missing_alt)} missing alt</dd>
         <dt>Sitemap</dt><dd>${page.source_sitemap ? "Yes" : "No"}</dd>
         <dt>Discovered</dt><dd>${page.source_discovered ? "Yes" : "No"}</dd>
         <dt>Structured Data</dt><dd>${structuredDataBadges(page)}</dd>
+
+        <dt>Headings</dt><dd>${headingsList(page.headings)}</dd>
+
+        <dt>Link Summary</dt><dd>
+          <ul class="mini-list">
+            <li>Internal Links: ${esc(page.internal_link_count ?? page.internal_outbound_link_count ?? "—")}</li>
+            <li>Unique Internal Links: ${esc(page.unique_internal_link_count ?? page.internal_outbound_link_count ?? "—")}</li>
+            <li>External Links: ${recorded(page.external_link_count, esc)}</li>
+            <li>Unique External Links: ${recorded(page.unique_external_link_count, esc)}</li>
+            <li>Inbound Links: ${esc(page.internal_inbound_link_count)}</li>
+            <li>Generic Anchors: ${esc(page.anchor_metrics?.genericAnchorCount ?? 0)}</li>
+            <li>Empty Anchors: ${esc(page.anchor_metrics?.emptyInternalAnchorCount ?? 0)}</li>
+          </ul>
+        </dd>
+
+        <dt>Duplicate Content</dt><dd>${duplicateContentDisplay(page.duplicate_content_samples)}</dd>
+
+        <dt>Technical Details</dt><dd>${
+          !hasTechnicalDetails
+            ? NOT_RECORDED
+            : `<ul class="mini-list">
+                <li>HTML Size: ${esc(Math.round(page.html_size_bytes / 1024))} KB</li>
+                <li>HTML Response Time: ${esc(page.response_time_ms ?? "—")} ms</li>
+                <li>Compression: ${esc(page.compression_encoding ?? "none")}</li>
+                <li>Charset: ${esc(page.charset ?? "—")}</li>
+                <li>Doctype: ${page.has_html5_doctype ? "HTML5" : "Missing/Non-HTML5"}</li>
+                <li>HTTPS: ${page.url && page.url.startsWith("https://") ? "Yes" : "No"}</li>
+                <li>Mixed Content Count: ${esc(page.mixed_content_count ?? 0)}</li>
+                <li>X-Powered-By: ${esc(page.server_headers?.xPoweredBy ?? "—")}</li>
+                <li>Preferred Host: ${esc(preferredHost ?? "—")}</li>
+              </ul>`
+        }</dd>
+
         <dt>Current Issues</dt><dd>${
           issues.length === 0
             ? emptyState("No current issues on this page.")
@@ -722,21 +795,21 @@ function renderTrends(history) {
       { label: "Medium", values: chronological.map((r) => r.medium_count) },
       { label: "Low", values: chronological.map((r) => r.low_count) },
     ],
-    ["#dc2626", "#ea580c", "#ca8a04", "#6b7280"]
+    [getThemeColor("--severity-critical"), getThemeColor("--severity-high"), getThemeColor("--severity-medium"), getThemeColor("--severity-low")]
   );
   const pageChart = sparklineSvg(
     [
       { label: "Total Pages", values: chronological.map((r) => r.total_pages) },
       { label: "Indexable", values: chronological.map((r) => r.indexable_count) },
     ],
-    ["#2563eb", "#16a34a"]
+    [getThemeColor("--info"), getThemeColor("--status-healthy")]
   );
   const changeChart = sparklineSvg(
     [
       { label: "New Issues", values: chronological.map((r) => r.changes.newIssues) },
       { label: "Resolved", values: chronological.map((r) => r.changes.resolvedIssues) },
     ],
-    ["#ea580c", "#16a34a"]
+    [getThemeColor("--severity-high"), getThemeColor("--severity-resolved")]
   );
 
   el.innerHTML = `
@@ -756,7 +829,7 @@ async function loadCrawlHistory() {
     state.crawlHistory = await fetchJson(`/api/crawl-history?siteId=${state.siteId}&limit=30`);
 
     if (state.crawlHistory.length === 0) {
-      body.innerHTML = emptyState("Run an audit to establish the first baseline.");
+      body.innerHTML = emptyState("NO PRIOR SCAN DATA. Run an audit to establish the first baseline.");
       document.getElementById("trendsBody").innerHTML = "";
       return;
     }
@@ -838,7 +911,7 @@ async function openCrawlDetail(crawlRunId) {
 
 async function refreshAll() {
   await loadLatestCrawl();
-  await Promise.allSettled([loadChanges(), loadIssues(), loadResolvedIssues(), loadPages(), loadCrawlHistory()]);
+  await Promise.allSettled([loadChanges(), loadIssues(), loadResolvedIssues(), loadPages(), loadCrawlHistory(), loadScoreHistory()]);
 }
 
 (async function init() {

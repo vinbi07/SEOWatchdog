@@ -1,8 +1,11 @@
 import type { PageResult } from "../types/seo.js";
 import { createChangeEvent } from "./changeEventFactory.js";
 import {
+  htmlSizeChangedSignificantly,
   internalInboundLinkCountChangedSignificantly,
+  linkCountChangedSignificantly,
   normalizeUrlForComparison,
+  responseTimeChangedSignificantly,
   structuredDataTypesChanged,
   textChanged,
   urlChanged,
@@ -291,6 +294,62 @@ export function comparePages(currentPages: PageResult[], previousPages: Previous
             ? "Page lost all internal inbound links and may be orphaned."
             : `Internal inbound link count changed: ${previous.internalInboundLinkCount} -> ${page.internalInboundLinkCount}`,
           metadata: becameOrphaned ? { possiblyOrphaned: true } : {},
+        })
+      );
+    }
+
+    if (htmlSizeChangedSignificantly(previous.htmlSizeBytes, page.htmlSizeBytes)) {
+      pageChanges.push(
+        createChangeEvent({
+          eventType: "html_size_changed",
+          entityType: "page",
+          url: page.url,
+          fieldName: "html_size_bytes",
+          previousValue: previous.htmlSizeBytes,
+          currentValue: page.htmlSizeBytes,
+          message: `HTML size changed significantly: ${previous.htmlSizeBytes} -> ${page.htmlSizeBytes} bytes`,
+        })
+      );
+    }
+
+    if (responseTimeChangedSignificantly(previous.responseTimeMs, page.responseTimeMs)) {
+      pageChanges.push(
+        createChangeEvent({
+          eventType: "response_time_changed",
+          entityType: "page",
+          url: page.url,
+          fieldName: "response_time_ms",
+          previousValue: previous.responseTimeMs,
+          currentValue: page.responseTimeMs,
+          message: `HTML response time changed significantly: ${previous.responseTimeMs}ms -> ${page.responseTimeMs}ms`,
+        })
+      );
+    }
+
+    if (linkCountChangedSignificantly(previous.internalLinkCount, page.anchorMetrics.internalLinkCount)) {
+      pageChanges.push(
+        createChangeEvent({
+          eventType: "link_count_changed",
+          entityType: "page",
+          url: page.url,
+          fieldName: "internal_link_count",
+          previousValue: previous.internalLinkCount,
+          currentValue: page.anchorMetrics.internalLinkCount,
+          message: `Internal link count changed significantly: ${previous.internalLinkCount} -> ${page.anchorMetrics.internalLinkCount}`,
+        })
+      );
+    }
+
+    if (linkCountChangedSignificantly(previous.externalLinkCount, page.anchorMetrics.externalLinkCount)) {
+      pageChanges.push(
+        createChangeEvent({
+          eventType: "link_count_changed",
+          entityType: "page",
+          url: page.url,
+          fieldName: "external_link_count",
+          previousValue: previous.externalLinkCount,
+          currentValue: page.anchorMetrics.externalLinkCount,
+          message: `External link count changed significantly: ${previous.externalLinkCount} -> ${page.anchorMetrics.externalLinkCount}`,
         })
       );
     }

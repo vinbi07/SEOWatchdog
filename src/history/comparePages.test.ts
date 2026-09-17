@@ -26,6 +26,10 @@ function previousPage(overrides: Partial<PreviousPageRecord> = {}): PreviousPage
     sourceDiscovered: false,
     internalInboundLinkCount: 5,
     structuredDataTypes: [],
+    htmlSizeBytes: 12_000,
+    responseTimeMs: 100,
+    internalLinkCount: 0,
+    externalLinkCount: 0,
     ...overrides,
   };
 }
@@ -117,5 +121,41 @@ describe("comparePages", () => {
     const result = comparePages([page], [matchingPrevious]);
     expect(result.changes).toHaveLength(0);
     expect(result.changedPageCount).toBe(0);
+  });
+
+  it("detects a large HTML-size change", () => {
+    const page = makePage({ url: URL, htmlSizeBytes: 250_000 });
+    const result = comparePages([page], [previousPage({ htmlSizeBytes: 40_000 })]);
+    expect(result.changes.some((c) => c.eventType === "html_size_changed")).toBe(true);
+  });
+
+  it("ignores a small HTML-size change", () => {
+    const page = makePage({ url: URL, htmlSizeBytes: 42_000 });
+    const result = comparePages([page], [previousPage({ htmlSizeBytes: 40_000 })]);
+    expect(result.changes.some((c) => c.eventType === "html_size_changed")).toBe(false);
+  });
+
+  it("ignores a small response-time fluctuation", () => {
+    const page = makePage({ url: URL, responseTimeMs: 220 });
+    const result = comparePages([page], [previousPage({ responseTimeMs: 180 })]);
+    expect(result.changes.some((c) => c.eventType === "response_time_changed")).toBe(false);
+  });
+
+  it("detects a meaningful external link count change", () => {
+    const page = makePage({
+      url: URL,
+      anchorMetrics: { ...makePage().anchorMetrics, externalLinkCount: 20 },
+    });
+    const result = comparePages([page], [previousPage({ externalLinkCount: 2 })]);
+    expect(result.changes.some((c) => c.eventType === "link_count_changed" && c.fieldName === "external_link_count")).toBe(true);
+  });
+
+  it("ignores a small link count change", () => {
+    const page = makePage({
+      url: URL,
+      anchorMetrics: { ...makePage().anchorMetrics, externalLinkCount: 5 },
+    });
+    const result = comparePages([page], [previousPage({ externalLinkCount: 4 })]);
+    expect(result.changes.some((c) => c.eventType === "link_count_changed")).toBe(false);
   });
 });

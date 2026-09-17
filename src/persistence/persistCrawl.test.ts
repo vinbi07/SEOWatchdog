@@ -15,6 +15,8 @@ vi.mock("../db/seoRepository.js", () => ({
   getPreviousSuccessfulCrawlRun: vi.fn(),
   getPreviousPageSnapshots: vi.fn(),
   getPreviousIssueSnapshots: vi.fn(),
+  getScoreSnapshotForCrawlRun: vi.fn(),
+  insertScoreSnapshot: vi.fn(),
   insertChangeEvents: vi.fn(),
   finishCrawlRun: vi.fn(),
   updateSiteLastSuccessfulCrawl: vi.fn(),
@@ -31,6 +33,7 @@ function fixtureReport(): CrawlReport {
     crawlStartedAt: "2026-01-01T00:00:00.000Z",
     crawlFinishedAt: "2026-01-01T00:01:00.000Z",
     totalPages: 0,
+    hostCanonicalization: null,
     discovery: {
       sitemapUrls: 0,
       internallyDiscoveredUrls: 0,
@@ -73,6 +76,7 @@ describe("persistCrawlAndCompare", () => {
     vi.mocked(repo.insertPageSnapshots).mockResolvedValue(new Map());
     vi.mocked(repo.insertIssueSnapshots).mockResolvedValue(undefined);
     vi.mocked(repo.getPreviousSuccessfulCrawlRun).mockResolvedValue(null);
+    vi.mocked(repo.insertScoreSnapshot).mockResolvedValue(undefined);
     vi.mocked(repo.insertChangeEvents).mockResolvedValue(undefined);
     vi.mocked(repo.finishCrawlRun).mockResolvedValue(undefined);
     vi.mocked(repo.updateSiteLastSuccessfulCrawl).mockResolvedValue(undefined);
@@ -82,6 +86,12 @@ describe("persistCrawlAndCompare", () => {
     expect(result.status).toBe("success");
     expect(result.crawlRunId).toBe("run-1");
     expect(result.comparisonResult?.comparison.baseline).toBe(true);
+    expect(repo.insertScoreSnapshot).toHaveBeenCalledWith(
+      expect.anything(),
+      "site-1",
+      "run-1",
+      expect.objectContaining({ overallScore: expect.any(Number) })
+    );
     expect(repo.finishCrawlRun).toHaveBeenCalledWith(
       expect.anything(),
       "run-1",

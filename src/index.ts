@@ -7,6 +7,7 @@ import { crawlSite } from "./crawler/crawler.js";
 import { applyPageRules } from "./rules/rules.js";
 import { findDuplicateIssues } from "./rules/duplicateRules.js";
 import { findCoverageIssues } from "./rules/coverageRules.js";
+import { checkHostCanonicalization } from "./rules/hostCanonicalization.js";
 import { analyzeIndexingState } from "./indexing/analyzeIndexingState.js";
 import { persistCrawlAndCompare } from "./persistence/persistCrawl.js";
 import { printSinceLastCrawl } from "./history/printSinceLastCrawl.js";
@@ -180,6 +181,14 @@ async function main(): Promise<void> {
     if (issues.length > 0) page.issues.push(...issues);
   }
 
+  // Site-level check (one extra request, not per-page): does the
+  // non-preferred www/non-www host cleanly redirect to the preferred one?
+  const hostCanonicalization = await checkHostCanonicalization(config.siteUrl);
+  if (hostCanonicalization.issue) {
+    const homepage = pages.find((p) => p.pageType === "homepage");
+    if (homepage) homepage.issues.push(hostCanonicalization.issue);
+  }
+
   const crawlFinishedAt = new Date().toISOString();
   const allIssues = pages.flatMap((p) => p.issues);
 
@@ -188,6 +197,7 @@ async function main(): Promise<void> {
     crawlStartedAt,
     crawlFinishedAt,
     totalPages: pages.length,
+    hostCanonicalization: hostCanonicalization.summary,
     discovery: {
       sitemapUrls: sitemapUrls.size,
       internallyDiscoveredUrls: pages.length,

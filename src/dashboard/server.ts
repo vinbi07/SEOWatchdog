@@ -31,6 +31,8 @@ import {
   getPreviousCrawlRun,
   getRecentChanges,
   getResolvedIssues,
+  getScoreHistory,
+  getScoreSnapshotForCrawlRun,
   listSites,
 } from "./queries.js";
 
@@ -66,9 +68,12 @@ async function handleApi(pathname: string, searchParams: URLSearchParams): Promi
   if (pathname === "/api/latest-crawl") {
     if (!siteId) return { status: 400, body: { error: "siteId is required" } };
     const latest = await getLatestCrawlRun(client, siteId);
-    if (!latest) return { status: 200, body: { crawlRun: null, sinceLastCrawl: null, status: null, freshness: null } };
+    if (!latest) return { status: 200, body: { crawlRun: null, sinceLastCrawl: null, status: null, freshness: null, score: null } };
 
-    const changes = await getChangesForCrawlRun(client, latest.id);
+    const [changes, score] = await Promise.all([
+      getChangesForCrawlRun(client, latest.id),
+      getScoreSnapshotForCrawlRun(client, latest.id),
+    ]);
     const sinceLastCrawl = summarizeSinceLastCrawl(changes);
     const status = computeOverallStatus({
       criticalCount: latest.critical_count,
@@ -82,7 +87,14 @@ async function handleApi(pathname: string, searchParams: URLSearchParams): Promi
     });
     const freshness = computeCrawlFreshness(latest.finished_at ?? latest.started_at, new Date(), config.dashboardStaleHours);
 
-    return { status: 200, body: { crawlRun: latest, sinceLastCrawl, status, freshness } };
+    // score is null for crawls that predate Step 2.7 or haven't been backfilled yet — never an error.
+    return { status: 200, body: { crawlRun: latest, sinceLastCrawl, status, freshness, score: score ?? null } };
+  }
+
+  if (pathname === "/api/score-history") {
+    if (!siteId) return { status: 400, body: { error: "siteId is required" } };
+    const limit = Number(searchParams.get("limit") ?? "30");
+    return { status: 200, body: await getScoreHistory(client, siteId, limit) };
   }
 
   if (pathname === "/api/crawl-history") {
@@ -146,8 +158,20 @@ async function handleApi(pathname: string, searchParams: URLSearchParams): Promi
     if (!siteId || !url) return { status: 400, body: { error: "siteId and url are required" } };
     const page = await getLatestPageByUrl(client, siteId, url);
     if (!page) return { status: 404, body: { error: "Page not found in the latest crawl" } };
-    const [issues, changes] = await Promise.all([getCurrentIssues(client, siteId), getChangesForUrl(client, siteId, url)]);
-    return { status: 200, body: { page, issues: issues.filter((i) => i.url === url), changes } };
+    const [issues, changes, crawlRun] = await Promise.all([
+      getCurrentIssues(client, siteId),
+      getChangesForUrl(client, siteId, url),
+      getCrawlRunById(client, page.crawl_run_id),
+    ]);
+    return {
+      status: 200,
+      body: {
+        page,
+        issues: issues.filter((i) => i.url === url),
+        changes,
+        preferredHost: crawlRun?.preferred_host ?? null,
+      },
+    };
   }
 
   return { status: 404, body: { error: "Not found" } };

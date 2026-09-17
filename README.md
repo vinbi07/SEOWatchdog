@@ -444,6 +444,22 @@ dashboard answer "first seen / how many crawls has this issue been open"
 for every current issue in one indexed query instead of one query per row.
 Apply it the same way as 0001.
 
+Step 2.6 (audit depth expansion) adds a third, additive-only migration:
+`supabase/migrations/0003_seo_watchdog_audit_depth.sql`. It only adds new
+nullable/defaulted columns to `seo_crawl_runs` (`preferred_host`,
+`www_redirect_status`) and `seo_page_snapshots` (HTML size, charset,
+doctype, compression, link counts, pixel-width estimates, mixed-content
+count, plus `alternate_links`/`headings`/`anchor_metrics`/`server_headers`/
+`duplicate_content_samples` jsonb columns) — no existing column is renamed,
+dropped, or has its type changed. **This migration must be applied before
+running `npm run audit` with `PERSIST_RESULTS=true` again** — until it is,
+persistence will fail with a "column not found" error (the crawl still
+runs and `output/latest-crawl.json` is still written; only Supabase
+persistence is affected, and the failure is caught and logged rather than
+crashing the audit). Snapshots written before this migration read back
+with `NULL`/empty values for these new columns; the dashboard shows "Not
+recorded" for those rather than guessing.
+
 ### Baseline process
 
 1. **First persisted crawl** (`PERSIST_RESULTS=true`, no prior successful

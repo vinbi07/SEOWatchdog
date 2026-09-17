@@ -1,5 +1,63 @@
 export type Severity = "critical" | "high" | "medium" | "low";
 
+export type HeadingLevel = 1 | 2 | 3 | 4 | 5 | 6;
+
+export interface HeadingEntry {
+  level: HeadingLevel;
+  text: string;
+}
+
+export interface AnchorEntry {
+  href: string;
+  text: string;
+  isInternal: boolean;
+}
+
+/**
+ * Aggregated, page-level anchor diagnostics (not the raw per-anchor list —
+ * that's only needed transiently while building this + the related issues).
+ */
+export interface AmbiguousAnchorSample {
+  text: string;
+  destinations: string[];
+}
+
+export interface AnchorMetrics {
+  internalLinkCount: number;
+  uniqueInternalLinkCount: number;
+  externalLinkCount: number;
+  uniqueExternalLinkCount: number;
+  emptyInternalAnchorCount: number;
+  genericAnchorCount: number;
+  /** Same normalized anchor text reused across several different internal destinations on this page. */
+  ambiguousAnchorTextCount: number;
+  /** Small samples (capped) for issue detail/display — never the full anchor list. */
+  emptyAnchorHrefSamples: string[];
+  genericAnchorTextSamples: string[];
+  ambiguousAnchorSamples: AmbiguousAnchorSample[];
+}
+
+export interface DuplicateContentSample {
+  /** Truncated for storage/display — never the full block. */
+  text: string;
+  occurrences: number;
+}
+
+export interface AlternateLink {
+  hreflang: string;
+  href: string;
+}
+
+/** Selected response headers only — never a full header dump (see README/dashboard). */
+export interface ServerHeaders {
+  server: string | null;
+  xPoweredBy: string | null;
+  contentType: string | null;
+  cacheControl: string | null;
+  contentSecurityPolicy: string | null;
+  strictTransportSecurity: string | null;
+}
+
 export interface Issue {
   issueType: string;
   severity: Severity;
@@ -102,6 +160,12 @@ export interface PageResult {
   h1: string[];
   h1Count: number;
   h2Count: number;
+  h3Count: number;
+  h4Count: number;
+  h5Count: number;
+  h6Count: number;
+  /** Full ordered heading list (all levels), used for hierarchy/duplicate checks and the page detail view. */
+  headings: HeadingEntry[];
   wordCount: number;
 
   internalLinks: string[];
@@ -109,6 +173,9 @@ export interface PageResult {
   brokenInternalLinks: string[];
   internalInboundLinkCount: number;
   internalOutboundLinkCount: number;
+  anchorMetrics: AnchorMetrics;
+
+  duplicateContentSamples: DuplicateContentSample[];
 
   images: ImageStats;
 
@@ -128,6 +195,21 @@ export interface PageResult {
   sources: PageSources;
   publicationState: PublicationState;
   indexingState: IndexingState;
+
+  alternateLinks: AlternateLink[];
+
+  /** Raw HTML response body size, for historical monitoring (see README Step 2.6). */
+  htmlSizeBytes: number;
+  charset: string | null;
+  hasHtml5Doctype: boolean;
+  compressionEncoding: string | null;
+  serverHeaders: ServerHeaders;
+  mixedContentCount: number;
+  mixedContentSamples: string[];
+
+  /** Deterministic character-width approximation — never an exact browser/Google rendering. */
+  titlePixelWidthEstimate: number | null;
+  metaDescriptionPixelWidthEstimate: number | null;
 
   issues: Issue[];
 }
@@ -158,11 +240,18 @@ export interface IndexingSummary {
   noindexUnexpected: number;
 }
 
+export interface HostCanonicalizationSummary {
+  preferredHost: string;
+  /** HTTP status of the non-preferred host's homepage request; null when the probe couldn't be made at all. */
+  wwwRedirectStatus: number | null;
+}
+
 export interface CrawlReport {
   site: string;
   crawlStartedAt: string;
   crawlFinishedAt: string;
   totalPages: number;
+  hostCanonicalization: HostCanonicalizationSummary | null;
   discovery: DiscoverySummary;
   indexing: IndexingSummary;
   summary: CrawlSummary;

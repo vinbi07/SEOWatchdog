@@ -3,13 +3,20 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>SEO Watchdog Dashboard</title>
+  <title>SEO Watchdog — Command Center</title>
+  <meta name="description" content="Autonomous search monitoring system" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
+  <div class="bg-grid" aria-hidden="true"></div>
+
   <header>
     <div class="header-left">
       <h1>SEO WATCHDOG</h1>
+      <span class="header-subtitle">Autonomous Search Monitoring System</span>
       <span id="envBadge" class="env-badge" hidden></span>
     </div>
     <div class="header-right">
@@ -17,29 +24,52 @@
         <span>Site</span>
         <select id="siteSelect" aria-label="Select site"></select>
       </label>
+      <div class="system-status" aria-hidden="true">
+        <span class="status-dot"></span>
+        <span class="status-text">ONLINE</span>
+      </div>
       <div id="freshness" class="freshness" aria-live="polite">—</div>
     </div>
   </header>
 
   <main id="app">
+    <section id="heroScore" aria-labelledby="heroScoreHeading">
+      <h2 id="heroScoreHeading" class="sr-h2">System Health</h2>
+      <div id="heroScoreBody" class="loading-state" role="status">
+        <div class="scan-sweep" aria-hidden="true"></div>
+        SCANNING SITE…<br /><span class="loading-sub">Analyzing crawl topology…</span>
+      </div>
+    </section>
+
+    <section id="categoryTiles" aria-labelledby="categoryTilesHeading">
+      <h2 id="categoryTilesHeading">Radial Diagnostics <span class="subtitle">Category Scores</span></h2>
+      <p class="hint">Select a module for its breakdown — what's helping, what's not.</p>
+      <div id="categoryTilesBody" class="cards category-tiles"></div>
+    </section>
+
+    <section id="scoreTrend" aria-labelledby="scoreTrendHeading">
+      <h2 id="scoreTrendHeading">System Health History <span class="subtitle">Score Trend</span></h2>
+      <div id="scoreTrendBody"></div>
+    </section>
+
     <section id="statusSection" aria-labelledby="statusHeading">
-      <h2 id="statusHeading" class="sr-h2">Status</h2>
-      <div id="statusBody">Loading…</div>
+      <h2 id="statusHeading" class="sr-h2">Scan Status</h2>
+      <div id="statusBody">Checking indexing state…</div>
     </section>
 
     <section id="latestCrawl" aria-labelledby="latestCrawlHeading">
-      <h2 id="latestCrawlHeading">Latest Health</h2>
-      <div id="latestCrawlBody">Loading…</div>
+      <h2 id="latestCrawlHeading">Latest Scan <span class="subtitle">Diagnostics</span></h2>
+      <div id="latestCrawlBody">Evaluating page systems…</div>
     </section>
 
     <section id="sinceLastCrawl" aria-labelledby="sinceLastCrawlHeading">
-      <h2 id="sinceLastCrawlHeading">Since Last Crawl</h2>
-      <p class="hint">Click a counter to filter Recent Changes below.</p>
-      <div id="sinceLastCrawlBody">Loading…</div>
+      <h2 id="sinceLastCrawlHeading">Change Detection <span class="subtitle">Since Last Scan</span></h2>
+      <p class="hint">Select a counter to filter the change feed below.</p>
+      <div id="sinceLastCrawlBody">Evaluating page systems…</div>
     </section>
 
     <section id="recentChanges" aria-labelledby="recentChangesHeading">
-      <h2 id="recentChangesHeading">Recent Changes</h2>
+      <h2 id="recentChangesHeading">Live Change Feed <span class="subtitle">Recent Changes</span></h2>
       <div class="filters">
         <label class="field">
           <span>Category</span>
@@ -65,11 +95,11 @@
         </label>
         <button type="button" id="clearChangeFilters" class="link-button">Clear filters</button>
       </div>
-      <div id="changesBody">Loading…</div>
+      <div id="changesBody">Evaluating page systems…</div>
     </section>
 
     <section id="currentIssues" aria-labelledby="currentIssuesHeading">
-      <h2 id="currentIssuesHeading">Current Issues</h2>
+      <h2 id="currentIssuesHeading">Active Anomalies <span class="subtitle">Current Issues</span></h2>
       <div class="filters">
         <label class="field grow">
           <span>Search</span>
@@ -94,16 +124,16 @@
           <select id="issuePageTypeFilter"><option value="">All</option></select>
         </label>
       </div>
-      <div id="issuesBody">Loading…</div>
+      <div id="issuesBody">Evaluating page systems…</div>
 
       <details id="resolvedIssuesDetails" class="collapsible">
         <summary>Recently Resolved</summary>
-        <div id="resolvedIssuesBody">Loading…</div>
+        <div id="resolvedIssuesBody">Evaluating page systems…</div>
       </details>
     </section>
 
     <section id="pages" aria-labelledby="pagesHeading">
-      <h2 id="pagesHeading">Pages</h2>
+      <h2 id="pagesHeading">Page Systems <span class="subtitle">Indexed Assets</span></h2>
       <div class="filters">
         <label class="field grow">
           <span>Search</span>
@@ -124,20 +154,20 @@
           </select>
         </label>
       </div>
-      <div id="pagesBody">Loading…</div>
+      <div id="pagesBody">Evaluating page systems…</div>
     </section>
 
     <section id="crawlHistory" aria-labelledby="crawlHistoryHeading">
-      <h2 id="crawlHistoryHeading">Crawl History</h2>
+      <h2 id="crawlHistoryHeading">Scan History <span class="subtitle">Crawl History</span></h2>
       <div id="trendsBody"></div>
-      <div id="historyBody">Loading…</div>
+      <div id="historyBody">Evaluating page systems…</div>
     </section>
   </main>
 
   <dialog id="detailDialog" class="detail-dialog" aria-labelledby="detailDialogTitle">
     <form method="dialog" class="detail-dialog-form">
       <header class="detail-dialog-header">
-        <h2 id="detailDialogTitle">Details</h2>
+        <h2 id="detailDialogTitle">System Inspection</h2>
         <button type="submit" class="icon-button" aria-label="Close">✕</button>
       </header>
       <div id="detailDialogBody" class="detail-dialog-body"></div>
@@ -145,6 +175,7 @@
   </dialog>
 
   <script src="labels.js"></script>
+  <script src="score.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

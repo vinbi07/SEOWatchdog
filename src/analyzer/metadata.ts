@@ -36,15 +36,6 @@ export function extractRobotsMeta($: CheerioAPI): RobotsMeta {
   };
 }
 
-export function extractHeadings($: CheerioAPI): { h1: string[]; h1Count: number; h2Count: number } {
-  const h1 = $("h1")
-    .map((_, el) => $(el).text().trim())
-    .get()
-    .filter((t) => t.length > 0);
-  const h2Count = $("h2").length;
-  return { h1, h1Count: $("h1").length, h2Count };
-}
-
 export function extractWordCount($: CheerioAPI): number {
   const clone = $("body").clone();
   clone.find("script, style, noscript, template").remove();

@@ -59,6 +59,26 @@ const ISSUE_TYPE_LABELS = {
   orphaned_sitemap_page: "Orphaned Sitemap Page",
   unexpected_noindex: "Unexpected Noindex",
   noindex_requires_review: "Noindex Needs Review",
+
+  // Step 2.6: audit depth expansion
+  duplicate_heading_text: "Duplicate Heading Text",
+  heading_hierarchy_skip: "Heading Hierarchy Skip",
+  excessive_headings: "Excessive Headings",
+  empty_internal_anchor: "Empty Internal Link Text",
+  generic_anchor_text: "Generic Anchor Text",
+  ambiguous_repeated_anchor_text: "Ambiguous Repeated Anchor Text",
+  duplicate_visible_content: "Duplicate Page Content",
+  missing_charset: "Missing Charset Declaration",
+  missing_doctype: "Missing HTML5 Doctype",
+  mixed_content: "Mixed HTTP/HTTPS Content",
+  html_response_uncompressed: "HTML Not Compressed",
+  x_powered_by_exposed: "X-Powered-By Header Exposed",
+  host_canonicalization_issue: "Host Canonicalization Issue",
+  invalid_hreflang: "Invalid Hreflang Value",
+  hreflang_missing_href: "Hreflang Missing Href",
+  hreflang_duplicate_language: "Duplicate Hreflang Language",
+  title_pixel_width_high: "Title May Be Too Wide",
+  meta_description_pixel_width_high: "Meta Description May Be Too Wide",
 };
 
 const PAGE_TYPE_LABELS = {
@@ -81,4 +101,39 @@ const INDEXING_STATE_LABELS = {
 function labelFor(map, key) {
   if (!key) return "—";
   return map[key] || key;
+}
+
+// Real SEO terminology for each score category — always shown, never replaced by the cozy label below.
+const SCORE_CATEGORY_LABELS = {
+  technical: "Technical SEO",
+  onPage: "On-Page SEO",
+  content: "Content Quality",
+  internalLinks: "Internal Linking",
+  indexing: "Indexing & Crawlability",
+  performance: "Performance / Server",
+};
+
+// Short system-module labels shown alongside (never instead of) SCORE_CATEGORY_LABELS. Purely cosmetic.
+const SCORE_CATEGORY_COZY_LABELS = {
+  technical: "TECHNICAL",
+  onPage: "ON-PAGE",
+  content: "CONTENT",
+  internalLinks: "LINKING",
+  indexing: "INDEXING",
+  performance: "PERFORMANCE",
+};
+
+const SCORE_LABEL_THRESHOLDS = [
+  { min: 90, label: "Excellent" },
+  { min: 80, label: "Healthy" },
+  { min: 70, label: "Needs Attention" },
+  { min: 50, label: "Poor" },
+  { min: 0, label: "Critical" },
+];
+
+function scoreLabelFor(score) {
+  for (const tier of SCORE_LABEL_THRESHOLDS) {
+    if (score >= tier.min) return tier.label;
+  }
+  return SCORE_LABEL_THRESHOLDS[SCORE_LABEL_THRESHOLDS.length - 1].label;
 }
