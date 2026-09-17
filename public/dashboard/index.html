@@ -2,41 +2,60 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>SEO Watchdog Dashboard</title>
   <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
   <header>
-    <h1>SEO WATCHDOG</h1>
-    <label>
-      Site:
-      <select id="siteSelect"></select>
-    </label>
+    <div class="header-left">
+      <h1>SEO WATCHDOG</h1>
+      <span id="envBadge" class="env-badge" hidden></span>
+    </div>
+    <div class="header-right">
+      <label class="field">
+        <span>Site</span>
+        <select id="siteSelect" aria-label="Select site"></select>
+      </label>
+      <div id="freshness" class="freshness" aria-live="polite">—</div>
+    </div>
   </header>
 
   <main id="app">
-    <section id="latestCrawl">
-      <h2>Latest Crawl</h2>
+    <section id="statusSection" aria-labelledby="statusHeading">
+      <h2 id="statusHeading" class="sr-h2">Status</h2>
+      <div id="statusBody">Loading…</div>
+    </section>
+
+    <section id="latestCrawl" aria-labelledby="latestCrawlHeading">
+      <h2 id="latestCrawlHeading">Latest Health</h2>
       <div id="latestCrawlBody">Loading…</div>
     </section>
 
-    <section id="sinceLastCrawl">
-      <h2>Since Last Crawl</h2>
+    <section id="sinceLastCrawl" aria-labelledby="sinceLastCrawlHeading">
+      <h2 id="sinceLastCrawlHeading">Since Last Crawl</h2>
+      <p class="hint">Click a counter to filter Recent Changes below.</p>
       <div id="sinceLastCrawlBody">Loading…</div>
     </section>
 
-    <section id="recentChanges">
-      <h2>Recent Changes</h2>
+    <section id="recentChanges" aria-labelledby="recentChangesHeading">
+      <h2 id="recentChangesHeading">Recent Changes</h2>
       <div class="filters">
-        <label>
-          Type:
-          <select id="eventTypeFilter">
-            <option value="">All</option>
+        <label class="field">
+          <span>Category</span>
+          <select id="eventCategoryFilter">
+            <option value="">All Changes</option>
+            <option value="new_issues">New Issues</option>
+            <option value="resolved">Resolved</option>
+            <option value="page_changes">Page Changes</option>
+            <option value="indexing">Indexing</option>
+            <option value="sitemap">Sitemap</option>
+            <option value="metadata">Metadata</option>
           </select>
         </label>
-        <label>
-          Severity:
-          <select id="severityFilter">
+        <label class="field">
+          <span>Severity</span>
+          <select id="changesSeverityFilter">
             <option value="">All</option>
             <option value="critical">Critical</option>
             <option value="high">High</option>
@@ -44,34 +63,58 @@
             <option value="low">Low</option>
           </select>
         </label>
+        <button type="button" id="clearChangeFilters" class="link-button">Clear filters</button>
       </div>
-      <table id="changesTable">
-        <thead>
-          <tr><th>Time</th><th>Type</th><th>Severity</th><th>Page</th><th>Change</th></tr>
-        </thead>
-        <tbody></tbody>
-      </table>
+      <div id="changesBody">Loading…</div>
     </section>
 
-    <section id="currentIssues">
-      <h2>Current Issues</h2>
-      <table id="issuesTable">
-        <thead>
-          <tr><th>Severity</th><th>Page</th><th>Issue</th><th>Message</th></tr>
-        </thead>
-        <tbody></tbody>
-      </table>
-    </section>
-
-    <section id="pages">
-      <h2>Pages</h2>
+    <section id="currentIssues" aria-labelledby="currentIssuesHeading">
+      <h2 id="currentIssuesHeading">Current Issues</h2>
       <div class="filters">
-        <label>
-          Page Type:
+        <label class="field grow">
+          <span>Search</span>
+          <input type="search" id="issueSearch" placeholder="URL, issue type, or message" />
+        </label>
+        <label class="field">
+          <span>Severity</span>
+          <select id="issueSeverityFilter">
+            <option value="">All</option>
+            <option value="critical">Critical</option>
+            <option value="high">High</option>
+            <option value="medium">Medium</option>
+            <option value="low">Low</option>
+          </select>
+        </label>
+        <label class="field">
+          <span>Issue Type</span>
+          <select id="issueTypeFilter"><option value="">All</option></select>
+        </label>
+        <label class="field">
+          <span>Page Type</span>
+          <select id="issuePageTypeFilter"><option value="">All</option></select>
+        </label>
+      </div>
+      <div id="issuesBody">Loading…</div>
+
+      <details id="resolvedIssuesDetails" class="collapsible">
+        <summary>Recently Resolved</summary>
+        <div id="resolvedIssuesBody">Loading…</div>
+      </details>
+    </section>
+
+    <section id="pages" aria-labelledby="pagesHeading">
+      <h2 id="pagesHeading">Pages</h2>
+      <div class="filters">
+        <label class="field grow">
+          <span>Search</span>
+          <input type="search" id="pageSearch" placeholder="URL or title" />
+        </label>
+        <label class="field">
+          <span>Page Type</span>
           <select id="pageTypeFilter"><option value="">All</option></select>
         </label>
-        <label>
-          Indexing State:
+        <label class="field">
+          <span>Indexing State</span>
           <select id="indexingStateFilter">
             <option value="">All</option>
             <option value="indexable">Indexable</option>
@@ -81,25 +124,27 @@
           </select>
         </label>
       </div>
-      <table id="pagesTable">
-        <thead>
-          <tr><th>URL</th><th>Page Type</th><th>HTTP</th><th>Indexing State</th><th>Title</th><th>Inbound Links</th><th>Issues</th></tr>
-        </thead>
-        <tbody></tbody>
-      </table>
+      <div id="pagesBody">Loading…</div>
     </section>
 
-    <section id="crawlHistory">
-      <h2>Crawl History</h2>
-      <table id="historyTable">
-        <thead>
-          <tr><th>Date</th><th>Status</th><th>Pages</th><th>Critical</th><th>High</th><th>Medium</th><th>Low</th></tr>
-        </thead>
-        <tbody></tbody>
-      </table>
+    <section id="crawlHistory" aria-labelledby="crawlHistoryHeading">
+      <h2 id="crawlHistoryHeading">Crawl History</h2>
+      <div id="trendsBody"></div>
+      <div id="historyBody">Loading…</div>
     </section>
   </main>
 
+  <dialog id="detailDialog" class="detail-dialog" aria-labelledby="detailDialogTitle">
+    <form method="dialog" class="detail-dialog-form">
+      <header class="detail-dialog-header">
+        <h2 id="detailDialogTitle">Details</h2>
+        <button type="submit" class="icon-button" aria-label="Close">✕</button>
+      </header>
+      <div id="detailDialogBody" class="detail-dialog-body"></div>
+    </form>
+  </dialog>
+
+  <script src="labels.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

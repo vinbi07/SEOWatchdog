@@ -21,6 +21,8 @@ const envSchema = z.object({
   SUPABASE_URL: z.preprocess((v) => (v === "" ? undefined : v), z.string().url().optional()),
   SUPABASE_SERVICE_ROLE_KEY: z.preprocess((v) => (v === "" ? undefined : v), z.string().min(1).optional()),
   DASHBOARD_PORT: z.coerce.number().int().positive().default(4173),
+  DASHBOARD_ENVIRONMENT: z.enum(["local", "development", "production"]).default("local"),
+  DASHBOARD_STALE_HOURS: z.coerce.number().positive().default(24),
 });
 
 function loadEnv() {
@@ -56,4 +58,6 @@ export const config = {
   supabaseUrl: env.SUPABASE_URL,
   supabaseServiceRoleKey: env.SUPABASE_SERVICE_ROLE_KEY,
   dashboardPort: env.DASHBOARD_PORT,
+  dashboardEnvironment: env.DASHBOARD_ENVIRONMENT,
+  dashboardStaleHours: env.DASHBOARD_STALE_HOURS,
 } as const;

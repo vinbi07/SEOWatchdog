@@ -17,20 +17,25 @@ import { fileURLToPath } from "node:url";
 import { config } from "../config/config.js";
 import { getSupabaseClient, isSupabaseConfigured } from "../db/supabaseClient.js";
 import { logger } from "../utils/logger.js";
+import { computeCrawlFreshness, computeOverallStatus, summarizeSinceLastCrawl } from "./aggregate.js";
 import {
   getChangesForCrawlRun,
-  getCrawlHistory,
-  getIssuesForCrawlRun,
+  getChangesForUrl,
+  getCrawlHistoryWithChangeCounts,
+  getCrawlRunById,
+  getCurrentIssueByKey,
+  getCurrentIssues,
   getLatestCrawlRun,
-  getPagesForCrawlRun,
+  getLatestPageByUrl,
+  getLatestPages,
+  getPreviousCrawlRun,
   getRecentChanges,
+  getResolvedIssues,
   listSites,
 } from "./queries.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = path.resolve(__dirname, "../../public/dashboard");
-
-const SEVERITY_RANK: Record<string, number> = { critical: 0, high: 1, medium: 2, low: 3 };
 
 const MIME_TYPES: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
@@ -45,25 +50,12 @@ function sendJson(res: import("node:http").ServerResponse, status: number, body:
   res.end(payload);
 }
 
-function summarizeSinceLastCrawl(changes: Array<Record<string, unknown>>) {
-  const count = (predicate: (c: Record<string, unknown>) => boolean) => changes.filter(predicate).length;
-  const changedPageUrls = new Set(
-    changes
-      .filter((c) => c.entity_type === "page" && c.event_type !== "page_new" && c.event_type !== "page_removed")
-      .map((c) => c.url)
-  );
-  return {
-    newIssues: count((c) => c.event_type === "issue_new"),
-    resolvedIssues: count((c) => c.event_type === "issue_resolved"),
-    ongoingIssues: count((c) => c.event_type === "issue_ongoing"),
-    newPages: count((c) => c.event_type === "page_new"),
-    removedPages: count((c) => c.event_type === "page_removed"),
-    changedPages: changedPageUrls.size,
-  };
-}
-
 async function handleApi(pathname: string, searchParams: URLSearchParams): Promise<{ status: number; body: unknown }> {
   const client = getSupabaseClient();
+
+  if (pathname === "/api/meta") {
+    return { status: 200, body: { environment: config.dashboardEnvironment, staleHours: config.dashboardStaleHours } };
+  }
 
   if (pathname === "/api/sites") {
     return { status: 200, body: await listSites(client) };
@@ -74,50 +66,88 @@ async function handleApi(pathname: string, searchParams: URLSearchParams): Promi
   if (pathname === "/api/latest-crawl") {
     if (!siteId) return { status: 400, body: { error: "siteId is required" } };
     const latest = await getLatestCrawlRun(client, siteId);
-    if (!latest) return { status: 200, body: { crawlRun: null, sinceLastCrawl: null } };
+    if (!latest) return { status: 200, body: { crawlRun: null, sinceLastCrawl: null, status: null, freshness: null } };
+
     const changes = await getChangesForCrawlRun(client, latest.id);
-    return { status: 200, body: { crawlRun: latest, sinceLastCrawl: summarizeSinceLastCrawl(changes) } };
+    const sinceLastCrawl = summarizeSinceLastCrawl(changes);
+    const status = computeOverallStatus({
+      criticalCount: latest.critical_count,
+      highCount: latest.high_count,
+      noindexUnexpectedCount: latest.noindex_unexpected_count,
+      // Major HTTP failures (crawl_failure/server_error) are always severity
+      // "critical" in the rules engine, so they're already captured by
+      // criticalCount — no separate query needed to check for them.
+      majorHttpFailureCount: 0,
+      newIssuesSinceLastCrawl: sinceLastCrawl.newIssues,
+    });
+    const freshness = computeCrawlFreshness(latest.finished_at ?? latest.started_at, new Date(), config.dashboardStaleHours);
+
+    return { status: 200, body: { crawlRun: latest, sinceLastCrawl, status, freshness } };
   }
 
   if (pathname === "/api/crawl-history") {
     if (!siteId) return { status: 400, body: { error: "siteId is required" } };
-    const limit = Number(searchParams.get("limit") ?? "20");
-    return { status: 200, body: await getCrawlHistory(client, siteId, limit) };
+    const limit = Number(searchParams.get("limit") ?? "30");
+    return { status: 200, body: await getCrawlHistoryWithChangeCounts(client, siteId, limit) };
+  }
+
+  if (pathname === "/api/crawl-detail") {
+    const crawlRunId = searchParams.get("crawlRunId");
+    if (!crawlRunId) return { status: 400, body: { error: "crawlRunId is required" } };
+    const crawlRun = await getCrawlRunById(client, crawlRunId);
+    if (!crawlRun) return { status: 404, body: { error: "Crawl run not found" } };
+    const [previousCrawlRun, changes] = await Promise.all([
+      getPreviousCrawlRun(client, crawlRun.site_id, crawlRun.started_at),
+      getChangesForCrawlRun(client, crawlRunId),
+    ]);
+    return { status: 200, body: { crawlRun, previousCrawlRun, sinceLastCrawl: summarizeSinceLastCrawl(changes), changes } };
   }
 
   if (pathname === "/api/changes") {
     if (!siteId) return { status: 400, body: { error: "siteId is required" } };
-    const limit = Number(searchParams.get("limit") ?? "100");
+    const limit = Number(searchParams.get("limit") ?? "50");
     const eventType = searchParams.get("eventType") ?? undefined;
     const severity = searchParams.get("severity") ?? undefined;
     return { status: 200, body: await getRecentChanges(client, siteId, { limit, eventType, severity }) };
   }
 
+  if (pathname === "/api/resolved-issues") {
+    if (!siteId) return { status: 400, body: { error: "siteId is required" } };
+    const limit = Number(searchParams.get("limit") ?? "30");
+    return { status: 200, body: await getResolvedIssues(client, siteId, limit) };
+  }
+
   if (pathname === "/api/issues") {
-    const crawlRunId = searchParams.get("crawlRunId");
-    if (!siteId && !crawlRunId) return { status: 400, body: { error: "siteId or crawlRunId is required" } };
-    const resolvedCrawlRunId = crawlRunId ?? (await getLatestCrawlRun(client, siteId!))?.id;
-    if (!resolvedCrawlRunId) return { status: 200, body: [] };
-    const issues = await getIssuesForCrawlRun(client, resolvedCrawlRunId);
-    issues.sort((a, b) => (SEVERITY_RANK[a.severity] ?? 4) - (SEVERITY_RANK[b.severity] ?? 4) || a.url.localeCompare(b.url));
-    return { status: 200, body: issues };
+    if (!siteId) return { status: 400, body: { error: "siteId is required" } };
+    return { status: 200, body: await getCurrentIssues(client, siteId) };
+  }
+
+  if (pathname === "/api/issue-detail") {
+    const issueKey = searchParams.get("issueKey");
+    if (!siteId || !issueKey) return { status: 400, body: { error: "siteId and issueKey are required" } };
+    const issue = await getCurrentIssueByKey(client, siteId, issueKey);
+    if (!issue) return { status: 404, body: { error: "Issue not found (it may have been resolved)" } };
+    return { status: 200, body: issue };
   }
 
   if (pathname === "/api/pages") {
-    const crawlRunId = searchParams.get("crawlRunId");
-    if (!siteId && !crawlRunId) return { status: 400, body: { error: "siteId or crawlRunId is required" } };
-    const resolvedCrawlRunId = crawlRunId ?? (await getLatestCrawlRun(client, siteId!))?.id;
-    if (!resolvedCrawlRunId) return { status: 200, body: [] };
-    const [pages, issues] = await Promise.all([
-      getPagesForCrawlRun(client, resolvedCrawlRunId),
-      getIssuesForCrawlRun(client, resolvedCrawlRunId),
-    ]);
+    if (!siteId) return { status: 400, body: { error: "siteId is required" } };
+    const [pages, issues] = await Promise.all([getLatestPages(client, siteId), getCurrentIssues(client, siteId)]);
     const issueCountByUrl = new Map<string, number>();
     for (const issue of issues) {
       issueCountByUrl.set(issue.url, (issueCountByUrl.get(issue.url) ?? 0) + 1);
     }
     const pagesWithIssueCounts = pages.map((page) => ({ ...page, issue_count: issueCountByUrl.get(page.url) ?? 0 }));
     return { status: 200, body: pagesWithIssueCounts };
+  }
+
+  if (pathname === "/api/page-detail") {
+    const url = searchParams.get("url");
+    if (!siteId || !url) return { status: 400, body: { error: "siteId and url are required" } };
+    const page = await getLatestPageByUrl(client, siteId, url);
+    if (!page) return { status: 404, body: { error: "Page not found in the latest crawl" } };
+    const [issues, changes] = await Promise.all([getCurrentIssues(client, siteId), getChangesForUrl(client, siteId, url)]);
+    return { status: 200, body: { page, issues: issues.filter((i) => i.url === url), changes } };
   }
 
   return { status: 404, body: { error: "Not found" } };
@@ -149,8 +179,13 @@ const server = createServer(async (req, res) => {
         });
         return;
       }
-      const { status, body } = await handleApi(url.pathname, url.searchParams);
-      sendJson(res, status, body);
+      try {
+        const { status, body } = await handleApi(url.pathname, url.searchParams);
+        sendJson(res, status, body);
+      } catch (err) {
+        logger.error("Dashboard API request failed", err instanceof Error ? err.message : err);
+        sendJson(res, 502, { error: "Unable to load data from Supabase." });
+      }
       return;
     }
 

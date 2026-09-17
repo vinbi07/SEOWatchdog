@@ -435,6 +435,15 @@ Supabase CLI's `supabase db push`, the SQL editor in the dashboard, or your
 own migration runner) — it's a plain idempotent (`create table if not
 exists`) SQL file with no project-specific tooling required.
 
+Step 2.5 adds a second, equally additive migration file:
+`supabase/migrations/0002_seo_watchdog_dashboard_views.sql`. It only
+creates four read-only views (`seo_latest_crawl_runs`, `seo_issue_history`,
+`seo_current_issues`, `seo_latest_pages`) on top of the existing tables —
+no table is altered, and nothing is dropped or renamed. These views let the
+dashboard answer "first seen / how many crawls has this issue been open"
+for every current issue in one indexed query instead of one query per row.
+Apply it the same way as 0001.
+
 ### Baseline process
 
 1. **First persisted crawl** (`PERSIST_RESULTS=true`, no prior successful
@@ -486,15 +495,28 @@ snapshots.
 
 - holds `SUPABASE_SERVICE_ROLE_KEY` server-side only,
 - exposes a small JSON API under `/api/*` (sites, latest crawl + since-last-crawl
-  summary, crawl history, recent change events, current issues, pages),
+  summary + overall status, crawl history + trends, crawl detail, recent
+  change events, current issues + issue detail, recently resolved issues,
+  pages + page detail),
 - serves the static page in `public/dashboard/` (`index.html` / `app.js` /
-  `styles.css`, vanilla JS, no build step or frontend framework).
+  `labels.js` / `styles.css`, vanilla JS, no build step or frontend
+  framework).
 
 It cannot modify SEO metadata, resolve issues, delete crawls, or trigger a
 new audit — it only reads. This is intended as a **local/internal
 development dashboard** for now; it has no authentication of its own, so
 don't expose `DASHBOARD_PORT` beyond localhost/your own network without
 adding one.
+
+As of Step 2.5, the dashboard shows a deterministic Healthy / Needs
+Attention / Critical status (`src/dashboard/aggregate.ts`, unit tested —
+never a numeric score), a prominent "Since Last Crawl" panel whose counters
+filter the Recent Changes feed, human-readable labels for raw event/issue
+identifiers (`public/dashboard/labels.js`, `src/dashboard/labels.ts`),
+drill-down detail views for issues/pages/crawls, searchable and sortable
+Current Issues and Pages tables, a "Recently Resolved" panel, and simple
+inline-SVG trend charts built from data already on `seo_crawl_runs` (no new
+chart dependency, since none existed before).
 
 Run it after at least one persisted crawl (`PERSIST_RESULTS=true`) exists:
 
@@ -520,11 +542,12 @@ src/
   history/       crawl-to-crawl comparison (normalization, issue/page diffing, change events)
   persistence/   orchestrates "persist this crawl, then compare it" (never throws)
   dashboard/     local read-only dashboard server + its JSON API
+                 (aggregate.ts/labels.ts are pure + unit tested)
   index.ts       CLI entrypoint (`npm run audit`)
 public/
-  dashboard/     static dashboard page (index.html / app.js / styles.css)
+  dashboard/     static dashboard page (index.html / app.js / labels.js / styles.css)
 supabase/
-  migrations/    additive SQL migrations (seo_* tables only)
+  migrations/    additive SQL migrations (seo_* tables + dashboard read views)
 output/
   latest-crawl.json
 ```
