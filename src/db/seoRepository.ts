@@ -7,6 +7,22 @@ import type { CrawlReport, PageResult } from "../types/seo.js";
 
 export type CrawlRunStatus = "running" | "success" | "partial" | "failed";
 
+export type TriggerType = "manual_cli" | "manual_dashboard" | "system";
+
+export const CRAWL_STAGES = [
+  "initializing",
+  "discovering",
+  "crawling",
+  "analyzing",
+  "persisting",
+  "comparing",
+  "scoring",
+  "complete",
+  "failed",
+] as const;
+
+export type CrawlStage = (typeof CRAWL_STAGES)[number];
+
 export interface SiteRow {
   id: string;
   domain: string;
@@ -56,16 +72,53 @@ export async function findOrCreateSite(client: SupabaseClient, baseUrl: string):
 export async function createRunningCrawlRun(
   client: SupabaseClient,
   siteId: string,
-  startedAt: string
+  startedAt: string,
+  triggerType: TriggerType | null = null
 ): Promise<string> {
   const { data, error } = await client
     .from("seo_crawl_runs")
-    .insert({ site_id: siteId, started_at: startedAt, status: "running" satisfies CrawlRunStatus })
+    .insert({
+      site_id: siteId,
+      started_at: startedAt,
+      status: "running" satisfies CrawlRunStatus,
+      trigger_type: triggerType,
+      current_stage: "initializing" satisfies CrawlStage,
+      last_progress_at: startedAt,
+    })
     .select("id")
     .single();
 
   if (error) throw new Error(`Failed to create seo_crawl_runs row: ${error.message}`);
   return data.id;
+}
+
+export interface CrawlRunProgressInput {
+  stage: CrawlStage;
+  pagesDiscovered?: number;
+  pagesCrawled?: number;
+}
+
+/**
+ * Best-effort heartbeat write for live scan state. Callers must swallow
+ * errors from this function (never let a failed heartbeat write fail the
+ * crawl itself) -- see the reportStage helper in src/index.ts.
+ */
+export async function updateCrawlRunProgress(
+  client: SupabaseClient,
+  crawlRunId: string,
+  input: CrawlRunProgressInput
+): Promise<void> {
+  const { error } = await client
+    .from("seo_crawl_runs")
+    .update({
+      current_stage: input.stage,
+      ...(input.pagesDiscovered !== undefined ? { pages_discovered: input.pagesDiscovered } : {}),
+      ...(input.pagesCrawled !== undefined ? { pages_crawled: input.pagesCrawled } : {}),
+      last_progress_at: new Date().toISOString(),
+    })
+    .eq("id", crawlRunId);
+
+  if (error) throw new Error(`Failed to update seo_crawl_runs progress: ${error.message}`);
 }
 
 export interface FinishCrawlRunInput {
@@ -82,6 +135,7 @@ export async function finishCrawlRun(client: SupabaseClient, crawlRunId: string,
     .update({
       status: input.status,
       finished_at: input.finishedAt,
+      current_stage: input.status === "success" ? ("complete" satisfies CrawlStage) : ("failed" satisfies CrawlStage),
       total_pages: report.totalPages,
       critical_count: report.summary.critical,
       high_count: report.summary.high,
@@ -114,7 +168,12 @@ export async function markCrawlRunErrored(
 ): Promise<void> {
   const { error } = await client
     .from("seo_crawl_runs")
-    .update({ status, finished_at: new Date().toISOString(), error_message: errorMessage })
+    .update({
+      status,
+      finished_at: new Date().toISOString(),
+      error_message: errorMessage,
+      current_stage: "failed" satisfies CrawlStage,
+    })
     .eq("id", crawlRunId);
   if (error) throw new Error(`Failed to mark seo_crawl_runs row as ${status}: ${error.message}`);
 }

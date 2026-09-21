@@ -23,6 +23,10 @@ const envSchema = z.object({
   DASHBOARD_PORT: z.coerce.number().int().positive().default(4173),
   DASHBOARD_ENVIRONMENT: z.enum(["local", "development", "production"]).default("local"),
   DASHBOARD_STALE_HOURS: z.coerce.number().positive().default(24),
+  DASHBOARD_ADMIN_TOKEN: z.preprocess((v) => (v === "" ? undefined : v), z.string().min(16).optional()),
+  SEO_SCAN_STALE_MINUTES: z.coerce.number().positive().default(15),
+  SEO_AUDIT_TIMEOUT_MINUTES: z.coerce.number().positive().default(45),
+  SEO_MANUAL_SCAN_COOLDOWN_SECONDS: z.coerce.number().nonnegative().default(300),
 });
 
 function loadEnv() {
@@ -60,4 +64,8 @@ export const config = {
   dashboardPort: env.DASHBOARD_PORT,
   dashboardEnvironment: env.DASHBOARD_ENVIRONMENT,
   dashboardStaleHours: env.DASHBOARD_STALE_HOURS,
+  dashboardAdminToken: env.DASHBOARD_ADMIN_TOKEN,
+  seoScanStaleMinutes: env.SEO_SCAN_STALE_MINUTES,
+  seoAuditTimeoutMinutes: env.SEO_AUDIT_TIMEOUT_MINUTES,
+  seoManualScanCooldownSeconds: env.SEO_MANUAL_SCAN_COOLDOWN_SECONDS,
 } as const;

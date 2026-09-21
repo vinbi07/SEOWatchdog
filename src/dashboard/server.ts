@@ -1,16 +1,17 @@
 /**
- * Minimal, read-only local dashboard for SEO Watchdog.
+ * Local dashboard for SEO Watchdog.
  *
  * This is a plain Node `http` server (no framework) that:
  *  - holds the Supabase service role key server-side only,
- *  - exposes a small JSON API under /api/*,
+ *  - exposes a small JSON API under /api/* (read-only, plus one guarded
+ *    mutating endpoint: POST /api/trigger-scan, see scanControl.ts),
  *  - serves the static dashboard page from public/dashboard/.
  *
  * The browser never sees SUPABASE_SERVICE_ROLE_KEY. It only talks to this
  * local server. Intended for local/internal use — see README "Dashboard"
  * section.
  */
-import { createServer } from "node:http";
+import { createServer, type IncomingMessage } from "node:http";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -18,6 +19,7 @@ import { config } from "../config/config.js";
 import { getSupabaseClient, isSupabaseConfigured } from "../db/supabaseClient.js";
 import { logger } from "../utils/logger.js";
 import { computeCrawlFreshness, computeOverallStatus, summarizeSinceLastCrawl } from "./aggregate.js";
+import { checkTriggerAuth, killActiveChild, reconcileStaleRun, triggerScan } from "./scanControl.js";
 import {
   getChangesForCrawlRun,
   getChangesForUrl,
@@ -52,6 +54,61 @@ function sendJson(res: import("node:http").ServerResponse, status: number, body:
   res.end(payload);
 }
 
+async function readJsonBody(req: IncomingMessage): Promise<unknown> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of req) {
+    chunks.push(chunk as Buffer);
+  }
+  if (chunks.length === 0) return {};
+  try {
+    return JSON.parse(Buffer.concat(chunks).toString("utf-8"));
+  } catch {
+    return {};
+  }
+}
+
+async function handleTriggerScan(req: IncomingMessage): Promise<{ status: number; body: unknown }> {
+  const auth = checkTriggerAuth(req);
+  if (auth === "not_configured") {
+    return { status: 501, body: { error: "Manual scan triggering is not enabled. Set DASHBOARD_ADMIN_TOKEN to enable it." } };
+  }
+  if (auth === "unauthorized") {
+    return { status: 401, body: { error: "Missing or invalid admin token." } };
+  }
+
+  const body = (await readJsonBody(req)) as { siteId?: unknown; siteUrl?: unknown };
+  const siteId = typeof body.siteId === "string" ? body.siteId : null;
+  const siteUrl = typeof body.siteUrl === "string" ? body.siteUrl : null;
+  if (!siteId && !siteUrl) return { status: 400, body: { error: "siteId or siteUrl is required" } };
+
+  const client = getSupabaseClient();
+  const result = await triggerScan(client, siteId ? { siteId } : { siteUrl: siteUrl! });
+
+  if (result.ok) {
+    return { status: 202, body: { success: true, siteId: result.siteId, crawlRunId: result.crawlRunId, status: "started" } };
+  }
+
+  if (result.reason === "already_running") {
+    return {
+      status: 409,
+      body: { success: false, crawlRunId: result.activeCrawlRunId, status: "already_running" },
+    };
+  }
+
+  if (result.reason === "cooldown") {
+    return {
+      status: 429,
+      body: { success: false, crawlRunId: null, status: "cooldown", retryAfterSeconds: result.retryAfterSeconds },
+    };
+  }
+
+  if (result.reason === "invalid_url") {
+    return { status: 400, body: { success: false, crawlRunId: null, status: "invalid_url" } };
+  }
+
+  return { status: 404, body: { success: false, crawlRunId: null, status: "site_not_found" } };
+}
+
 async function handleApi(pathname: string, searchParams: URLSearchParams): Promise<{ status: number; body: unknown }> {
   const client = getSupabaseClient();
 
@@ -67,8 +124,26 @@ async function handleApi(pathname: string, searchParams: URLSearchParams): Promi
 
   if (pathname === "/api/latest-crawl") {
     if (!siteId) return { status: 400, body: { error: "siteId is required" } };
-    const latest = await getLatestCrawlRun(client, siteId);
+
+    let latest = await getLatestCrawlRun(client, siteId);
+    if (latest?.status === "running") {
+      // Self-heal a stale/timed-out run before rendering it, so a poll
+      // never shows "SCANNING" forever after a server crash or a runaway phase.
+      await reconcileStaleRun(client, siteId);
+      latest = await getLatestCrawlRun(client, siteId);
+    }
     if (!latest) return { status: 200, body: { crawlRun: null, sinceLastCrawl: null, status: null, freshness: null, score: null } };
+
+    const isActive = latest.status === "running";
+
+    if (isActive) {
+      // A running crawl has no finished_at/severity counts/score yet — skip
+      // the change/score/freshness queries that assume a completed run.
+      return {
+        status: 200,
+        body: { crawlRun: { ...latest, isActive }, sinceLastCrawl: null, status: null, freshness: null, score: null },
+      };
+    }
 
     const [changes, score] = await Promise.all([
       getChangesForCrawlRun(client, latest.id),
@@ -88,7 +163,10 @@ async function handleApi(pathname: string, searchParams: URLSearchParams): Promi
     const freshness = computeCrawlFreshness(latest.finished_at ?? latest.started_at, new Date(), config.dashboardStaleHours);
 
     // score is null for crawls that predate Step 2.7 or haven't been backfilled yet — never an error.
-    return { status: 200, body: { crawlRun: latest, sinceLastCrawl, status, freshness, score: score ?? null } };
+    return {
+      status: 200,
+      body: { crawlRun: { ...latest, isActive }, sinceLastCrawl, status, freshness, score: score ?? null },
+    };
   }
 
   if (pathname === "/api/score-history") {
@@ -197,6 +275,36 @@ const server = createServer(async (req, res) => {
     const url = new URL(req.url ?? "/", `http://localhost:${config.dashboardPort}`);
 
     if (url.pathname.startsWith("/api/")) {
+      if (req.method === "POST" && url.pathname === "/api/trigger-scan") {
+        // Auth is checked before the Supabase-configured gate below, so an
+        // unauthorized request never even implicitly confirms Supabase is reachable.
+        const auth = checkTriggerAuth(req);
+        if (auth !== "ok") {
+          sendJson(
+            res,
+            auth === "not_configured" ? 501 : 401,
+            auth === "not_configured"
+              ? { error: "Manual scan triggering is not enabled. Set DASHBOARD_ADMIN_TOKEN to enable it." }
+              : { error: "Missing or invalid admin token." }
+          );
+          return;
+        }
+        if (!isSupabaseConfigured()) {
+          sendJson(res, 503, {
+            error: "Supabase is not configured. Set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY to use the dashboard.",
+          });
+          return;
+        }
+        try {
+          const { status, body } = await handleTriggerScan(req);
+          sendJson(res, status, body);
+        } catch (err) {
+          logger.error("Dashboard trigger-scan request failed", err instanceof Error ? err.message : err);
+          sendJson(res, 502, { error: "Unable to start a scan right now." });
+        }
+        return;
+      }
+
       if (!isSupabaseConfigured()) {
         sendJson(res, 503, {
           error: "Supabase is not configured. Set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY to use the dashboard.",
@@ -236,8 +344,19 @@ const server = createServer(async (req, res) => {
 });
 
 server.listen(config.dashboardPort, () => {
-  logger.info(`SEO Watchdog dashboard (read-only) listening on http://localhost:${config.dashboardPort}`);
+  logger.info(`SEO Watchdog dashboard listening on http://localhost:${config.dashboardPort}`);
   if (!isSupabaseConfigured()) {
     logger.warn("SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY are not set — dashboard API calls will return 503.");
   }
+  if (!config.dashboardAdminToken) {
+    logger.warn("DASHBOARD_ADMIN_TOKEN is not set — manual scan triggering is disabled.");
+  }
 });
+
+function shutdown(): void {
+  killActiveChild();
+  server.close(() => process.exit(0));
+}
+
+process.on("SIGINT", shutdown);
+process.on("SIGTERM", shutdown);

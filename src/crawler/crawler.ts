@@ -45,6 +45,28 @@ export interface CrawlResult {
   sitemapUrls: Set<string>;
 }
 
+export interface CrawlProgress {
+  pagesDiscovered: number;
+  pagesCrawled: number;
+}
+
+interface ProgressTracker {
+  discovered: number;
+  crawled: number;
+  report(): void;
+}
+
+function makeProgressTracker(onProgress?: (progress: CrawlProgress) => void): ProgressTracker {
+  const tracker: ProgressTracker = {
+    discovered: 0,
+    crawled: 0,
+    report() {
+      onProgress?.({ pagesDiscovered: tracker.discovered, pagesCrawled: tracker.crawled });
+    },
+  };
+  return tracker;
+}
+
 function safePathname(url: string): string {
   try {
     return new URL(url).pathname;
@@ -70,7 +92,8 @@ async function fetchAndAnalyze(url: string): Promise<PageResult> {
  * per crawled page, with `brokenInternalLinks` and internal inbound/
  * outbound link counts resolved against the full crawled set.
  */
-export async function crawlSite(): Promise<CrawlResult> {
+export async function crawlSite(onProgress?: (progress: CrawlProgress) => void): Promise<CrawlResult> {
+  const tracker = makeProgressTracker(onProgress);
   const { urls, robots } = await discoverSitemapUrls();
 
   let sitemapTargets = dedupeUrls(urls);
@@ -91,7 +114,15 @@ export async function crawlSite(): Promise<CrawlResult> {
 
   logger.info(`Crawling ${crawlableSitemapUrls.length} sitemap URL(s) with concurrency=${config.maxConcurrency}`);
 
-  const pages = await runPool(crawlableSitemapUrls, config.maxConcurrency, config.requestDelayMs, fetchAndAnalyze);
+  tracker.discovered = crawlableSitemapUrls.length;
+  tracker.report();
+
+  const pages = await runPool(crawlableSitemapUrls, config.maxConcurrency, config.requestDelayMs, async (url) => {
+    const result = await fetchAndAnalyze(url);
+    tracker.crawled += 1;
+    tracker.report();
+    return result;
+  });
   for (const page of pages) {
     page.sources.sitemap = true;
   }
@@ -102,7 +133,7 @@ export async function crawlSite(): Promise<CrawlResult> {
   }
 
   if (config.discoverInternalUrls) {
-    await discoverAdditionalPages(pages, visited, isAllowed);
+    await discoverAdditionalPages(pages, visited, isAllowed, tracker);
   }
 
   resolveBrokenInternalLinks(pages);
@@ -121,7 +152,8 @@ export async function crawlSite(): Promise<CrawlResult> {
 async function discoverAdditionalPages(
   pages: PageResult[],
   visited: Set<string>,
-  isAllowed: (url: string) => boolean
+  isAllowed: (url: string) => boolean,
+  tracker: ProgressTracker
 ): Promise<void> {
   let frontier = collectNewLinkTargets(pages, visited, isAllowed);
   let depth = 1;
@@ -135,7 +167,15 @@ async function discoverAdditionalPages(
 
     logger.info(`Discovery depth ${depth}: crawling ${batch.length} newly discovered URL(s)`);
 
-    const newPages = await runPool(batch, config.maxConcurrency, config.requestDelayMs, fetchAndAnalyze);
+    tracker.discovered += batch.length;
+    tracker.report();
+
+    const newPages = await runPool(batch, config.maxConcurrency, config.requestDelayMs, async (url) => {
+      const result = await fetchAndAnalyze(url);
+      tracker.crawled += 1;
+      tracker.report();
+      return result;
+    });
     for (const page of newPages) {
       page.sources.discovered = true;
       visited.add(normalizeUrl(page.finalUrl) ?? page.finalUrl);

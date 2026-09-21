@@ -24,13 +24,21 @@
         <span>Site</span>
         <select id="siteSelect" aria-label="Select site"></select>
       </label>
-      <div class="system-status" aria-hidden="true">
+      <div class="system-status" id="systemStatus" aria-live="polite">
         <span class="status-dot"></span>
         <span class="status-text">ONLINE</span>
       </div>
+      <span class="mode-badge">MODE: MANUAL</span>
+      <button type="button" id="initiateScanBtn" class="scan-trigger-btn">INITIATE SCAN</button>
       <div id="freshness" class="freshness" aria-live="polite">—</div>
     </div>
   </header>
+
+  <div id="scanProgressBanner" class="scan-progress-banner" hidden aria-live="polite">
+    <div class="scan-progress-header">SCAN SEQUENCE INITIALIZED</div>
+    <ul id="scanStageList" class="scan-stage-list"></ul>
+    <div id="scanProgressCounts" class="scan-progress-counts"></div>
+  </div>
 
   <main id="app">
     <section id="heroScore" aria-labelledby="heroScoreHeading">
@@ -171,6 +179,35 @@
         <button type="submit" class="icon-button" aria-label="Close">✕</button>
       </header>
       <div id="detailDialogBody" class="detail-dialog-body"></div>
+    </form>
+  </dialog>
+
+  <dialog id="scanConfirmDialog" class="detail-dialog" aria-labelledby="scanConfirmTitle">
+    <form method="dialog" class="detail-dialog-form" id="scanConfirmForm">
+      <header class="detail-dialog-header">
+        <h2 id="scanConfirmTitle">Initiate Scan</h2>
+        <button type="submit" value="cancel" class="icon-button" aria-label="Close">✕</button>
+      </header>
+      <div class="detail-dialog-body">
+        <div class="scan-target-mode">
+          <label><input type="radio" name="scanTargetMode" value="existing" checked /> Use selected site</label>
+          <label><input type="radio" name="scanTargetMode" value="custom" /> Scan a new URL</label>
+        </div>
+        <p>Initiate a full SEO scan for <strong id="scanConfirmTarget">—</strong>?</p>
+        <label class="field" id="scanCustomUrlField" hidden>
+          <span>Website URL</span>
+          <input type="url" id="scanCustomUrlInput" placeholder="https://example.com" autocomplete="off" />
+        </label>
+        <label class="field" id="scanTokenField" hidden>
+          <span>Admin Token</span>
+          <input type="password" id="scanTokenInput" autocomplete="off" />
+        </label>
+        <p id="scanConfirmError" class="error-state" role="alert" hidden></p>
+        <div class="dialog-actions">
+          <button type="submit" value="cancel" class="link-button">CANCEL</button>
+          <button type="button" id="scanConfirmSubmit" class="scan-trigger-btn">INITIATE</button>
+        </div>
+      </div>
     </form>
   </dialog>
 

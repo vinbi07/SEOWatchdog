@@ -21,11 +21,12 @@ vi.mock("../db/seoRepository.js", () => ({
   finishCrawlRun: vi.fn(),
   updateSiteLastSuccessfulCrawl: vi.fn(),
   markCrawlRunErrored: vi.fn(),
+  updateCrawlRunProgress: vi.fn(),
 }));
 
 const supabaseClientModule = await import("../db/supabaseClient.js");
 const repo = await import("../db/seoRepository.js");
-const { persistCrawlAndCompare } = await import("./persistCrawl.js");
+const { persistCrawlAndCompare, startCrawlRun } = await import("./persistCrawl.js");
 
 function fixtureReport(): CrawlReport {
   return {
@@ -125,5 +126,60 @@ describe("persistCrawlAndCompare", () => {
     expect(result.status).toBe("failed");
     expect(result.crawlRunId).toBeNull();
     expect(repo.markCrawlRunErrored).not.toHaveBeenCalled();
+  });
+
+  it("reuses an existingRun context instead of creating a second site/crawl-run row", async () => {
+    vi.mocked(repo.insertPageSnapshots).mockResolvedValue(new Map());
+    vi.mocked(repo.insertIssueSnapshots).mockResolvedValue(undefined);
+    vi.mocked(repo.getPreviousSuccessfulCrawlRun).mockResolvedValue(null);
+    vi.mocked(repo.insertScoreSnapshot).mockResolvedValue(undefined);
+    vi.mocked(repo.insertChangeEvents).mockResolvedValue(undefined);
+    vi.mocked(repo.finishCrawlRun).mockResolvedValue(undefined);
+    vi.mocked(repo.updateSiteLastSuccessfulCrawl).mockResolvedValue(undefined);
+
+    const existingRun = { client: {} as never, siteId: "site-existing", crawlRunId: "run-existing" };
+    const result = await persistCrawlAndCompare(fixtureReport(), existingRun);
+
+    expect(result.status).toBe("success");
+    expect(result.crawlRunId).toBe("run-existing");
+    expect(repo.findOrCreateSite).not.toHaveBeenCalled();
+    expect(repo.createRunningCrawlRun).not.toHaveBeenCalled();
+    expect(repo.insertPageSnapshots).toHaveBeenCalledWith(expect.anything(), "site-existing", "run-existing", expect.anything());
+  });
+});
+
+describe("startCrawlRun", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    (config as { persistResults: boolean }).persistResults = true;
+    vi.mocked(supabaseClientModule.isSupabaseConfigured).mockReturnValue(true);
+  });
+
+  it("returns null when PERSIST_RESULTS is false", async () => {
+    (config as { persistResults: boolean }).persistResults = false;
+    const result = await startCrawlRun("https://example.com", "2026-01-01T00:00:00.000Z", "manual_dashboard");
+    expect(result).toBeNull();
+    expect(repo.createRunningCrawlRun).not.toHaveBeenCalled();
+  });
+
+  it("returns null when Supabase is not configured", async () => {
+    vi.mocked(supabaseClientModule.isSupabaseConfigured).mockReturnValue(false);
+    const result = await startCrawlRun("https://example.com", "2026-01-01T00:00:00.000Z", "manual_dashboard");
+    expect(result).toBeNull();
+  });
+
+  it("creates the site + running crawl run and passes triggerType through", async () => {
+    vi.mocked(repo.findOrCreateSite).mockResolvedValue({ id: "site-1", domain: "example.com", baseUrl: "https://example.com" });
+    vi.mocked(repo.createRunningCrawlRun).mockResolvedValue("run-1");
+
+    const result = await startCrawlRun("https://example.com", "2026-01-01T00:00:00.000Z", "manual_dashboard");
+
+    expect(result).toEqual({ client: expect.anything(), siteId: "site-1", crawlRunId: "run-1" });
+    expect(repo.createRunningCrawlRun).toHaveBeenCalledWith(
+      expect.anything(),
+      "site-1",
+      "2026-01-01T00:00:00.000Z",
+      "manual_dashboard"
+    );
   });
 });

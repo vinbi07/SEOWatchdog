@@ -6,6 +6,7 @@ const state = {
   issueSort: { key: "severity", dir: "asc" },
   pages: [],
   crawlHistory: [],
+  scan: { active: false, pollHandle: null },
 };
 
 // --- Generic helpers --------------------------------------------------
@@ -106,15 +107,22 @@ async function loadSites() {
   }
   select.innerHTML = state.sites.map((site) => `<option value="${esc(site.id)}">${esc(site.name)} (${esc(site.domain)})</option>`).join("");
 
+  // Preserve the current selection across a re-load (e.g. after a scan
+  // trigger adds a new site) if it's still valid; otherwise fall back to
+  // the remembered site, then the first one.
   const remembered = sessionStorage.getItem("seoWatchdog.siteId");
-  state.siteId = state.sites.some((s) => s.id === remembered) ? remembered : state.sites[0].id;
+  const preferred = state.sites.some((s) => s.id === state.siteId) ? state.siteId : remembered;
+  state.siteId = state.sites.some((s) => s.id === preferred) ? preferred : state.sites[0].id;
   select.value = state.siteId;
 
-  select.addEventListener("change", () => {
-    state.siteId = select.value;
-    sessionStorage.setItem("seoWatchdog.siteId", state.siteId);
-    refreshAll();
-  });
+  if (!select.dataset.changeBound) {
+    select.dataset.changeBound = "true";
+    select.addEventListener("change", () => {
+      state.siteId = select.value;
+      sessionStorage.setItem("seoWatchdog.siteId", state.siteId);
+      refreshAll();
+    });
+  }
 }
 
 async function loadMeta() {
@@ -155,6 +163,16 @@ async function loadLatestCrawl() {
 
   try {
     const { crawlRun, sinceLastCrawl, status, freshness, score } = await fetchJson(`/api/latest-crawl?siteId=${state.siteId}`);
+
+    updateScanProgressUI(crawlRun);
+
+    if (crawlRun && crawlRun.isActive) {
+      // A running crawl has no finished_at/severity counts/score yet — leave
+      // the previously rendered score/health cards alone and just show the
+      // scanning banner, rather than blanking them mid-scan.
+      statusEl.innerHTML = `<div class="status-banner tone-info">● SCANNING</div>`;
+      return crawlRun;
+    }
 
     renderHeroScore(score);
     renderCategoryTiles(score);
@@ -225,6 +243,260 @@ async function loadLatestCrawl() {
     return null;
   }
 }
+
+// --- Manual scan trigger ------------------------------------------------
+
+const TOKEN_STORAGE_KEY = "seoWatchdog.adminToken";
+const STAGE_ORDER = ["initializing", "crawling", "analyzing", "persisting", "comparing", "scoring", "complete"];
+
+function getAdminToken() {
+  try {
+    return localStorage.getItem(TOKEN_STORAGE_KEY);
+  } catch {
+    return null;
+  }
+}
+function setAdminToken(token) {
+  try {
+    localStorage.setItem(TOKEN_STORAGE_KEY, token);
+  } catch {
+    // localStorage unavailable (private mode, blocked site data) — the
+    // token simply won't be remembered across page loads.
+  }
+}
+function clearAdminToken() {
+  try {
+    localStorage.removeItem(TOKEN_STORAGE_KEY);
+  } catch {
+    // see getAdminToken
+  }
+}
+
+function stopScanPolling() {
+  if (state.scan.pollHandle) {
+    clearInterval(state.scan.pollHandle);
+    state.scan.pollHandle = null;
+  }
+}
+
+function beginScanPolling() {
+  if (state.scan.pollHandle) return; // already polling
+  state.scan.pollHandle = setInterval(async () => {
+    const crawlRun = await loadLatestCrawl();
+    if (!crawlRun || !crawlRun.isActive) {
+      stopScanPolling();
+      await refreshAll();
+      showScanCompletionBanner(crawlRun);
+    }
+  }, 3000);
+}
+
+function updateScanProgressUI(crawlRun) {
+  const banner = document.getElementById("scanProgressBanner");
+  const stageListEl = document.getElementById("scanStageList");
+  const countsEl = document.getElementById("scanProgressCounts");
+  const systemStatusEl = document.getElementById("systemStatus");
+  const statusDot = systemStatusEl.querySelector(".status-dot");
+  const statusText = systemStatusEl.querySelector(".status-text");
+  const btn = document.getElementById("initiateScanBtn");
+
+  const isActive = Boolean(crawlRun && crawlRun.isActive);
+  state.scan.active = isActive;
+
+  systemStatusEl.classList.toggle("scanning", isActive);
+  if (statusDot) statusDot.classList.toggle("scanning", isActive);
+  if (statusText) statusText.textContent = isActive ? "SCANNING" : "ONLINE";
+  btn.disabled = isActive;
+  btn.textContent = isActive ? "SCAN IN PROGRESS" : "INITIATE SCAN";
+
+  if (!isActive) {
+    banner.hidden = true;
+    stopScanPolling();
+    return;
+  }
+
+  // Reload-during-scan: land here from a fresh page load with no polling
+  // loop running yet — start following the in-progress scan.
+  beginScanPolling();
+
+  banner.querySelector(".scan-progress-header").textContent = "SCAN SEQUENCE INITIALIZED";
+  banner.hidden = false;
+
+  const currentStage = crawlRun.current_stage || "initializing";
+  const currentIndex = STAGE_ORDER.indexOf(currentStage);
+  stageListEl.innerHTML = STAGE_ORDER.map((stage, i) => {
+    const cls = i < currentIndex ? "stage-done" : i === currentIndex ? "stage-active" : "";
+    const status = i < currentIndex ? "COMPLETE" : i === currentIndex ? "ACTIVE" : "PENDING";
+    return `<li class="${cls}">${esc(STAGE_LABELS[stage] || stage.toUpperCase())} ........ ${status}</li>`;
+  }).join("");
+
+  const { pages_discovered: discovered, pages_crawled: crawled } = crawlRun;
+  countsEl.textContent = discovered != null && crawled != null ? `Pages: ${crawled} / ${discovered}` : "";
+}
+
+function showScanCompletionBanner(crawlRun) {
+  const banner = document.getElementById("scanProgressBanner");
+  const header = banner.querySelector(".scan-progress-header");
+  const stageListEl = document.getElementById("scanStageList");
+  const countsEl = document.getElementById("scanProgressCounts");
+
+  if (!crawlRun) {
+    banner.hidden = true;
+    return;
+  }
+
+  header.textContent = crawlRun.status === "success" ? "SCAN COMPLETE" : crawlRun.status === "partial" ? "SCAN PARTIAL" : "SCAN FAILED";
+  stageListEl.innerHTML = "";
+  if (crawlRun.status === "success") {
+    countsEl.textContent = `Pages Scanned: ${crawlRun.total_pages ?? "—"}`;
+  } else {
+    countsEl.innerHTML = esc(crawlRun.error_message || "The scan did not complete successfully.");
+  }
+  banner.hidden = false;
+  setTimeout(() => {
+    banner.hidden = true;
+  }, 10000);
+}
+
+const scanConfirmDialog = document.getElementById("scanConfirmDialog");
+const scanConfirmTarget = document.getElementById("scanConfirmTarget");
+const scanCustomUrlField = document.getElementById("scanCustomUrlField");
+const scanCustomUrlInput = document.getElementById("scanCustomUrlInput");
+const scanTokenField = document.getElementById("scanTokenField");
+const scanTokenInput = document.getElementById("scanTokenInput");
+const scanConfirmError = document.getElementById("scanConfirmError");
+const scanConfirmSubmit = document.getElementById("scanConfirmSubmit");
+
+function getScanTargetMode() {
+  const checked = document.querySelector('input[name="scanTargetMode"]:checked');
+  return checked ? checked.value : "existing";
+}
+
+function updateScanTargetModeUI() {
+  const isCustom = getScanTargetMode() === "custom";
+  scanCustomUrlField.hidden = !isCustom;
+  if (isCustom) {
+    scanConfirmTarget.textContent = "a new site";
+  } else {
+    const site = state.sites.find((s) => s.id === state.siteId);
+    scanConfirmTarget.textContent = site ? site.domain : "the selected site";
+  }
+}
+
+document.querySelectorAll('input[name="scanTargetMode"]').forEach((radio) => {
+  radio.addEventListener("change", updateScanTargetModeUI);
+});
+
+document.getElementById("initiateScanBtn").addEventListener("click", () => {
+  if (!state.siteId || state.scan.active) return;
+  document.querySelector('input[name="scanTargetMode"][value="existing"]').checked = true;
+  scanCustomUrlInput.value = "";
+  updateScanTargetModeUI();
+  scanConfirmError.hidden = true;
+  scanConfirmError.textContent = "";
+  scanTokenField.hidden = Boolean(getAdminToken());
+  scanTokenInput.value = "";
+  if (typeof scanConfirmDialog.showModal === "function") scanConfirmDialog.showModal();
+  else scanConfirmDialog.setAttribute("open", "");
+});
+
+scanConfirmSubmit.addEventListener("click", async () => {
+  scanConfirmError.hidden = true;
+
+  const isCustom = getScanTargetMode() === "custom";
+  let requestBody;
+  if (isCustom) {
+    const customUrl = scanCustomUrlInput.value.trim();
+    try {
+      new URL(customUrl);
+    } catch {
+      scanConfirmError.textContent = "Enter a valid, absolute URL (e.g. https://example.com).";
+      scanConfirmError.hidden = false;
+      return;
+    }
+    requestBody = { siteUrl: customUrl };
+  } else {
+    requestBody = { siteId: state.siteId };
+  }
+
+  const typedToken = scanTokenInput.value.trim();
+  if (!scanTokenField.hidden && typedToken) setAdminToken(typedToken);
+  const token = getAdminToken();
+  if (!token) {
+    scanTokenField.hidden = false;
+    scanConfirmError.textContent = "An admin token is required to initiate a scan.";
+    scanConfirmError.hidden = false;
+    return;
+  }
+
+  scanConfirmSubmit.disabled = true;
+  try {
+    const res = await fetch("/api/trigger-scan", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Dashboard-Admin-Token": token },
+      body: JSON.stringify(requestBody),
+    });
+    const body = await res.json().catch(() => ({}));
+
+    if (res.status === 202) {
+      scanConfirmDialog.close();
+      // A custom URL may have just created a brand-new site — refresh the
+      // site list so it appears in the dropdown, then follow that site's
+      // scan even if a different one was previously selected.
+      await loadSites();
+      if (body.siteId) {
+        state.siteId = body.siteId;
+        sessionStorage.setItem("seoWatchdog.siteId", state.siteId);
+        document.getElementById("siteSelect").value = state.siteId;
+      }
+      await loadLatestCrawl();
+      beginScanPolling();
+      return;
+    }
+
+    if (res.status === 409) {
+      // A scan is already running for this site — follow it instead of erroring.
+      scanConfirmDialog.close();
+      await loadLatestCrawl();
+      beginScanPolling();
+      return;
+    }
+
+    if (res.status === 400 && body.status === "invalid_url") {
+      scanConfirmError.textContent = "Enter a valid, absolute URL (e.g. https://example.com).";
+      scanConfirmError.hidden = false;
+      return;
+    }
+
+    if (res.status === 401) {
+      clearAdminToken();
+      scanTokenField.hidden = false;
+      scanConfirmError.textContent = "Invalid admin token. Please try again.";
+      scanConfirmError.hidden = false;
+      return;
+    }
+
+    if (res.status === 429) {
+      scanConfirmError.textContent = `Please wait before initiating another scan (${body.retryAfterSeconds ?? "a few"}s remaining).`;
+      scanConfirmError.hidden = false;
+      return;
+    }
+
+    if (res.status === 501) {
+      scanConfirmError.textContent = "Manual scan triggering is not enabled on this server (DASHBOARD_ADMIN_TOKEN is unset).";
+      scanConfirmError.hidden = false;
+      return;
+    }
+
+    scanConfirmError.textContent = body.error || `Unable to start scan (HTTP ${res.status}).`;
+    scanConfirmError.hidden = false;
+  } catch (err) {
+    scanConfirmError.textContent = `Unable to reach the server: ${err.message}`;
+    scanConfirmError.hidden = false;
+  } finally {
+    scanConfirmSubmit.disabled = false;
+  }
+});
 
 document.getElementById("sinceLastCrawlBody").addEventListener("click", (e) => {
   const btn = e.target.closest("[data-action]");
@@ -838,13 +1110,14 @@ async function loadCrawlHistory() {
 
     body.innerHTML = `
       <table>
-        <thead><tr><th>Date</th><th>Status</th><th>Pages</th><th>Critical</th><th>High</th><th>Medium</th><th>Low</th><th>Changes</th></tr></thead>
+        <thead><tr><th>Date</th><th>Trigger</th><th>Status</th><th>Pages</th><th>Critical</th><th>High</th><th>Medium</th><th>Low</th><th>Changes</th></tr></thead>
         <tbody>
           ${state.crawlHistory
             .map(
               (run) => `
             <tr class="crawl-row" data-crawl-id="${esc(run.id)}" tabindex="0" role="button">
               <td>${esc(fmtDate(run.started_at))}</td>
+              <td>${esc(triggerTypeLabel(run.trigger_type))}</td>
               <td>${esc(run.status)}</td>
               <td>${esc(run.total_pages)}</td>
               <td>${esc(run.critical_count)}</td>
@@ -885,10 +1158,13 @@ async function openCrawlDetail(crawlRunId) {
         : "—";
     detailDialogBody.innerHTML = `
       <dl class="detail-list">
+        <dt>Trigger</dt><dd>${esc(triggerTypeLabel(crawlRun.trigger_type))}</dd>
         <dt>Started</dt><dd>${esc(fmtDate(crawlRun.started_at))}</dd>
+        <dt>Finished</dt><dd>${esc(fmtDate(crawlRun.finished_at))}</dd>
         <dt>Status</dt><dd>${esc(crawlRun.status)}</dd>
         <dt>Duration</dt><dd>${esc(duration)}</dd>
         <dt>Pages Crawled</dt><dd>${esc(crawlRun.total_pages)}</dd>
+        ${crawlRun.error_message ? `<dt>Error</dt><dd>${esc(crawlRun.error_message)}</dd>` : ""}
         <dt>Severity</dt><dd>Critical ${esc(crawlRun.critical_count)} · High ${esc(crawlRun.high_count)} · Medium ${esc(crawlRun.medium_count)} · Low ${esc(crawlRun.low_count)}</dd>
         <dt>Indexing</dt><dd>Indexable ${esc(crawlRun.indexable_count)} · Noindex Expected ${esc(crawlRun.noindex_expected_count)} · Review ${esc(crawlRun.noindex_review_count)} · Unexpected ${esc(crawlRun.noindex_unexpected_count)}</dd>
         <dt>Discovery</dt><dd>Sitemap ${esc(crawlRun.sitemap_urls)} · Discovered ${esc(crawlRun.internally_discovered_urls)} · Orphaned ${esc(crawlRun.orphaned_sitemap_pages)}</dd>

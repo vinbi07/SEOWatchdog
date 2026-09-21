@@ -103,6 +103,29 @@ function labelFor(map, key) {
   return map[key] || key;
 }
 
+const STAGE_LABELS = {
+  initializing: "INITIALIZING",
+  discovering: "DISCOVERY",
+  crawling: "CRAWLING",
+  analyzing: "ANALYSIS",
+  persisting: "PERSISTING",
+  comparing: "COMPARISON",
+  scoring: "SCORING",
+  complete: "COMPLETE",
+  failed: "FAILED",
+};
+
+const TRIGGER_TYPE_LABELS = {
+  manual_cli: "CLI",
+  manual_dashboard: "Dashboard",
+  system: "Scheduled",
+};
+
+function triggerTypeLabel(triggerType) {
+  if (!triggerType) return "Legacy / Unknown";
+  return TRIGGER_TYPE_LABELS[triggerType] || triggerType;
+}
+
 // Real SEO terminology for each score category — always shown, never replaced by the cozy label below.
 const SCORE_CATEGORY_LABELS = {
   technical: "Technical SEO",

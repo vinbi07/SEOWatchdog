@@ -460,6 +460,17 @@ crashing the audit). Snapshots written before this migration read back
 with `NULL`/empty values for these new columns; the dashboard shows "Not
 recorded" for those rather than guessing.
 
+Step 3 (manual scan trigger) adds a fifth, additive-only migration:
+`supabase/migrations/0005_seo_watchdog_scan_control.sql`. It only adds new
+nullable/check-constrained columns to `seo_crawl_runs` (`trigger_type`,
+`current_stage`, `pages_discovered`, `pages_crawled`, `last_progress_at`) —
+no existing column is altered. **This migration must be applied before
+using the dashboard's "INITIATE SCAN" button** (and before running
+`npm run audit` with `PERSIST_RESULTS=true` again) — until it is,
+persistence will fail with a "column not found" error the same way 0003
+does above. Crawl runs from before this migration have `trigger_type =
+NULL`, shown in the dashboard as "Legacy / Unknown".
+
 ### Baseline process
 
 1. **First persisted crawl** (`PERSIST_RESULTS=true`, no prior successful
@@ -505,24 +516,27 @@ snapshots.
 
 ### Dashboard
 
-`npm run dashboard` starts a small local, **read-only** server
-(`src/dashboard/server.ts`, plain Node `http` — no framework added) on
-`http://localhost:4173` (configurable via `DASHBOARD_PORT`). It:
+`npm run dashboard` starts a small local server (`src/dashboard/server.ts`,
+plain Node `http` — no framework added) on `http://localhost:4173`
+(configurable via `DASHBOARD_PORT`). It:
 
 - holds `SUPABASE_SERVICE_ROLE_KEY` server-side only,
-- exposes a small JSON API under `/api/*` (sites, latest crawl + since-last-crawl
-  summary + overall status, crawl history + trends, crawl detail, recent
-  change events, current issues + issue detail, recently resolved issues,
-  pages + page detail),
+- exposes a small JSON API under `/api/*` — almost all of it read-only
+  (sites, latest crawl + since-last-crawl summary + overall status, crawl
+  history + trends, crawl detail, recent change events, current issues +
+  issue detail, recently resolved issues, pages + page detail), plus one
+  guarded mutating endpoint, `POST /api/trigger-scan` (see "Manual Scan
+  Trigger" below),
 - serves the static page in `public/dashboard/` (`index.html` / `app.js` /
   `labels.js` / `styles.css`, vanilla JS, no build step or frontend
   framework).
 
-It cannot modify SEO metadata, resolve issues, delete crawls, or trigger a
-new audit — it only reads. This is intended as a **local/internal
-development dashboard** for now; it has no authentication of its own, so
-don't expose `DASHBOARD_PORT` beyond localhost/your own network without
-adding one.
+It cannot modify SEO metadata, resolve issues, or delete crawls — it only
+observes, analyzes, compares, and scores. It **can** trigger a new manual
+audit, guarded by an admin token (see below). This is intended as a
+**local/internal dashboard** — the read-only `/api/*` endpoints still have
+no authentication of their own, so don't expose `DASHBOARD_PORT` beyond
+localhost/your own network.
 
 As of Step 2.5, the dashboard shows a deterministic Healthy / Needs
 Attention / Critical status (`src/dashboard/aggregate.ts`, unit tested —
@@ -541,6 +555,53 @@ npm run audit       # with PERSIST_RESULTS=true, once or twice to get history
 npm run dashboard   # then open http://localhost:4173
 ```
 
+### Manual Scan Trigger
+
+The dashboard's "INITIATE SCAN" button lets an authorized user start a real
+audit without touching a terminal. It does not run a second crawler — it
+spawns the exact same pipeline as `npm run audit` (as a child process) with
+`SEO_TRIGGER_TYPE=manual_dashboard` and `PERSIST_RESULTS=true` forced on,
+targeting whichever site is selected in the dashboard.
+
+- **Scanning a brand-new site**: the Initiate Scan dialog has a "Scan a new
+  URL" option alongside the default "Use selected site" one — type any
+  absolute URL and it's scanned directly, no `.env` edit or terminal needed.
+  The site is get-or-created via the same `findOrCreateSite` dedup-by-domain
+  logic the CLI itself uses, so entering the URL of an already-tracked site
+  again reuses that site rather than creating a duplicate; a brand-new
+  domain becomes a normal tracked site (appearing in the site dropdown)
+  from then on.
+- **Enabling it**: set `DASHBOARD_ADMIN_TOKEN` in `.env` (e.g. `openssl rand
+  -hex 32`). Left unset, `POST /api/trigger-scan` refuses every request
+  (`501`) rather than silently allowing unauthenticated scans. The browser
+  sends the token as the `X-Dashboard-Admin-Token` header; the dashboard
+  page asks for it once and remembers it in the browser's `localStorage`.
+- **Live state**: `seo_crawl_runs` gains `trigger_type`, `current_stage`,
+  `pages_discovered`, `pages_crawled`, and `last_progress_at` (migration
+  `0005_seo_watchdog_scan_control.sql`). The dashboard polls
+  `/api/latest-crawl` every ~3s while a scan is active and shows real stage
+  transitions (initializing → crawling → analyzing → persisting → comparing
+  → scoring → complete) — never a fabricated percentage. Crawl runs from
+  before this migration have `trigger_type = NULL`, shown as "Legacy /
+  Unknown", never guessed at.
+- **Duplicate/stale scans**: only one scan per site may run at a time,
+  enforced against the `seo_crawl_runs.status = 'running'` row itself (not a
+  separate lock table). A run with no progress heartbeat for
+  `SEO_SCAN_STALE_MINUTES` (default 15) or that exceeds the hard
+  `SEO_AUDIT_TIMEOUT_MINUTES` ceiling (default 45) is automatically marked
+  `failed` so a new scan can start — checked on every trigger attempt and
+  every poll of an active run.
+- **Cooldown**: dashboard-triggered scans are rate-limited to one per
+  `SEO_MANUAL_SCAN_COOLDOWN_SECONDS` (default 300) to prevent accidental
+  spam-clicking.
+- **Single-instance limitation**: the in-memory cooldown/child-process
+  tracking only works correctly for one running `npm run dashboard`
+  process. This tool has no multi-instance deployment story; the
+  `seo_crawl_runs` row itself (not the in-memory state) is the real
+  cross-instance guard against two simultaneous crawls.
+- No scheduling, cron, or external notifications (Slack/email/webhook) are
+  part of this — see "SCAN MODE: MANUAL" in the dashboard header.
+
 ## Project structure
 
 ```
@@ -557,7 +618,8 @@ src/
   db/            Supabase client + seo_* table read/write functions
   history/       crawl-to-crawl comparison (normalization, issue/page diffing, change events)
   persistence/   orchestrates "persist this crawl, then compare it" (never throws)
-  dashboard/     local read-only dashboard server + its JSON API
+  dashboard/     local dashboard server + its JSON API (mostly read-only,
+                 plus the guarded manual scan trigger in scanControl.ts)
                  (aggregate.ts/labels.ts are pure + unit tested)
   index.ts       CLI entrypoint (`npm run audit`)
 public/

@@ -338,6 +338,130 @@ h3 {
   color: var(--status-healthy);
 }
 
+.status-banner.tone-info {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.status-dot.scanning {
+  background: var(--accent);
+  box-shadow: 0 0 6px var(--accent);
+}
+
+.system-status.scanning {
+  color: var(--accent);
+}
+
+.mode-badge {
+  font-size: 0.62rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  padding: 0.15rem 0.4rem;
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--text-muted) 14%, var(--surface-raised));
+  color: var(--text-secondary);
+  border: 1px solid var(--border);
+}
+
+.scan-trigger-btn {
+  font: inherit;
+  font-weight: 700;
+  font-size: 0.7rem;
+  letter-spacing: 0.08em;
+  padding: 0.35rem 0.8rem;
+  border-radius: 3px;
+  border: 1px solid var(--accent);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  color: var(--accent);
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.scan-trigger-btn:hover:not(:disabled) {
+  background: var(--accent);
+  color: var(--bg);
+}
+
+.scan-trigger-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+  border-color: var(--border-strong);
+  background: transparent;
+  color: var(--text-disabled);
+}
+
+.scan-progress-banner {
+  margin-top: 1rem;
+  padding: 0.9rem 1.1rem;
+  border-radius: 4px;
+  border: 1px solid var(--accent);
+  background: color-mix(in srgb, var(--accent) 6%, var(--panel));
+}
+
+.scan-progress-header {
+  font-weight: 700;
+  font-size: 0.75rem;
+  letter-spacing: 0.08em;
+  color: var(--accent);
+  margin-bottom: 0.5rem;
+}
+
+.scan-stage-list {
+  list-style: none;
+  margin: 0 0 0.5rem;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem 1.2rem;
+  font-size: 0.72rem;
+  letter-spacing: 0.03em;
+}
+
+.scan-stage-list li {
+  color: var(--text-muted);
+}
+
+.scan-stage-list li.stage-active {
+  color: var(--accent);
+  font-weight: 700;
+}
+
+.scan-stage-list li.stage-done {
+  color: var(--status-healthy);
+}
+
+.scan-stage-list li.stage-failed {
+  color: var(--severity-critical);
+  font-weight: 700;
+}
+
+.scan-progress-counts {
+  font-size: 0.72rem;
+  color: var(--text-secondary);
+}
+
+.dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.6rem;
+  margin-top: 1rem;
+}
+
+.scan-target-mode {
+  display: flex;
+  gap: 1.2rem;
+  margin-bottom: 0.75rem;
+  font-size: 0.78rem;
+}
+
+.scan-target-mode label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  cursor: pointer;
+  color: var(--text-secondary);
+}
+
 /* Cards */
 
 .cards {

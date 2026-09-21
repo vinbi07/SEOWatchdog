@@ -24,6 +24,23 @@ export async function listSites(client: SupabaseClient): Promise<SiteSummary[]> 
   }));
 }
 
+export async function getSiteById(client: SupabaseClient, siteId: string): Promise<SiteSummary | null> {
+  const { data, error } = await client
+    .from("seo_sites")
+    .select("id, name, domain, base_url, last_successful_crawl_at")
+    .eq("id", siteId)
+    .maybeSingle();
+  if (error) throw new Error(error.message);
+  if (!data) return null;
+  return {
+    id: data.id,
+    name: data.name,
+    domain: data.domain,
+    baseUrl: data.base_url,
+    lastSuccessfulCrawlAt: data.last_successful_crawl_at,
+  };
+}
+
 export async function getLatestCrawlRun(client: SupabaseClient, siteId: string) {
   const { data, error } = await client
     .from("seo_crawl_runs")
@@ -57,7 +74,7 @@ export async function getPreviousCrawlRun(client: SupabaseClient, siteId: string
 }
 
 const CRAWL_HISTORY_COLUMNS =
-  "id, started_at, finished_at, status, total_pages, critical_count, high_count, medium_count, low_count, indexable_count, noindex_expected_count, noindex_review_count, noindex_unexpected_count";
+  "id, started_at, finished_at, status, trigger_type, total_pages, critical_count, high_count, medium_count, low_count, indexable_count, noindex_expected_count, noindex_review_count, noindex_unexpected_count";
 
 /**
  * Recent crawl runs plus, in one extra query (not one per row), the

@@ -9,9 +9,47 @@ import { findDuplicateIssues } from "./rules/duplicateRules.js";
 import { findCoverageIssues } from "./rules/coverageRules.js";
 import { checkHostCanonicalization } from "./rules/hostCanonicalization.js";
 import { analyzeIndexingState } from "./indexing/analyzeIndexingState.js";
-import { persistCrawlAndCompare } from "./persistence/persistCrawl.js";
+import { persistCrawlAndCompare, startCrawlRun, type CrawlRunContext } from "./persistence/persistCrawl.js";
+import { updateCrawlRunProgress, markCrawlRunErrored, type CrawlStage, type TriggerType } from "./db/seoRepository.js";
 import { printSinceLastCrawl } from "./history/printSinceLastCrawl.js";
 import type { CrawlReport, CrawlSummary, IndexingSummary, Issue, Severity } from "./types/seo.js";
+
+const VALID_TRIGGER_TYPES: TriggerType[] = ["manual_cli", "manual_dashboard", "system"];
+
+function resolveTriggerType(): TriggerType {
+  const raw = process.env.SEO_TRIGGER_TYPE;
+  if (raw && (VALID_TRIGGER_TYPES as string[]).includes(raw)) return raw as TriggerType;
+  return "manual_cli";
+}
+
+const PROGRESS_THROTTLE_MS = 2000;
+
+/**
+ * Best-effort live-progress reporting against the crawl run row created by
+ * startCrawlRun. A no-op when persistence is disabled/unconfigured
+ * (runCtx is null) or when Supabase writes fail -- a heartbeat write must
+ * never fail the crawl itself.
+ */
+function makeReporter(runCtx: CrawlRunContext | null) {
+  let lastProgressWriteAt = 0;
+
+  function stage(newStage: CrawlStage, counts?: { pagesDiscovered?: number; pagesCrawled?: number }): void {
+    if (!runCtx) return;
+    void updateCrawlRunProgress(runCtx.client, runCtx.crawlRunId, { stage: newStage, ...counts }).catch((err) => {
+      logger.warn("Failed to update scan progress (non-fatal)", err instanceof Error ? err.message : err);
+    });
+  }
+
+  function progress(counts: { pagesDiscovered: number; pagesCrawled: number }): void {
+    if (!runCtx) return;
+    const now = Date.now();
+    if (now - lastProgressWriteAt < PROGRESS_THROTTLE_MS) return;
+    lastProgressWriteAt = now;
+    stage("crawling", counts);
+  }
+
+  return { stage, progress };
+}
 
 const SEVERITY_ORDER: Severity[] = ["critical", "high", "medium", "low"];
 const COVERAGE_ISSUE_TYPES = new Set(["indexable_page_missing_from_sitemap", "orphaned_sitemap_page"]);
@@ -155,64 +193,87 @@ function printConsoleSummary(report: CrawlReport): void {
 
 async function main(): Promise<void> {
   const crawlStartedAt = new Date().toISOString();
+  const triggerType = resolveTriggerType();
   logger.info(`Starting SEO Watchdog audit for ${config.siteUrl}`);
 
-  const { pages, sitemapUrls } = await crawlSite();
+  const runCtx = await startCrawlRun(config.siteUrl, crawlStartedAt, triggerType);
+  const reporter = makeReporter(runCtx);
+  reporter.stage("initializing");
 
-  for (const page of pages) {
-    page.issues = applyPageRules(page);
+  let report: CrawlReport;
+  try {
+    reporter.stage("crawling");
+    const { pages, sitemapUrls } = await crawlSite((p) => reporter.progress(p));
+
+    reporter.stage("analyzing");
+
+    for (const page of pages) {
+      page.issues = applyPageRules(page);
+    }
+
+    const duplicateIssues = findDuplicateIssues(pages);
+    for (const page of pages) {
+      const extra = duplicateIssues.get(page.url);
+      if (extra) page.issues.push(...extra);
+    }
+
+    const coverage = findCoverageIssues(pages, sitemapUrls);
+    for (const page of pages) {
+      const extra = coverage.issuesByUrl.get(page.url);
+      if (extra) page.issues.push(...extra);
+    }
+
+    for (const page of pages) {
+      const { indexingState, issues } = analyzeIndexingState(page);
+      page.indexingState = indexingState;
+      if (issues.length > 0) page.issues.push(...issues);
+    }
+
+    // Site-level check (one extra request, not per-page): does the
+    // non-preferred www/non-www host cleanly redirect to the preferred one?
+    const hostCanonicalization = await checkHostCanonicalization(config.siteUrl);
+    if (hostCanonicalization.issue) {
+      const homepage = pages.find((p) => p.pageType === "homepage");
+      if (homepage) homepage.issues.push(hostCanonicalization.issue);
+    }
+
+    const crawlFinishedAt = new Date().toISOString();
+    const allIssues = pages.flatMap((p) => p.issues);
+
+    report = {
+      site: config.siteUrl,
+      crawlStartedAt,
+      crawlFinishedAt,
+      totalPages: pages.length,
+      hostCanonicalization: hostCanonicalization.summary,
+      discovery: {
+        sitemapUrls: sitemapUrls.size,
+        internallyDiscoveredUrls: pages.length,
+        discoveredNotInSitemap: coverage.discoveredNotInSitemapCount,
+        indexableMissingFromSitemap: coverage.indexableMissingFromSitemapCount,
+        nonIndexableMissingFromSitemap: coverage.nonIndexableMissingFromSitemapCount,
+        orphanedSitemapPages: coverage.orphanedSitemapPageCount,
+      },
+      indexing: tallyIndexingStates(pages),
+      summary: tallyIssues(allIssues),
+      siteIssues: [],
+      pages,
+    };
+  } catch (err) {
+    // If crawling/analysis itself throws before persistCrawlAndCompare is
+    // ever reached, the run row startCrawlRun already created would
+    // otherwise be stuck at status='running' forever.
+    if (runCtx) {
+      const errorMessage = err instanceof Error ? err.message : String(err);
+      await markCrawlRunErrored(runCtx.client, runCtx.crawlRunId, "failed", errorMessage).catch((markErr) => {
+        logger.error("Additionally failed to mark the crawl run's error status.", markErr);
+      });
+    }
+    throw err;
   }
 
-  const duplicateIssues = findDuplicateIssues(pages);
-  for (const page of pages) {
-    const extra = duplicateIssues.get(page.url);
-    if (extra) page.issues.push(...extra);
-  }
-
-  const coverage = findCoverageIssues(pages, sitemapUrls);
-  for (const page of pages) {
-    const extra = coverage.issuesByUrl.get(page.url);
-    if (extra) page.issues.push(...extra);
-  }
-
-  for (const page of pages) {
-    const { indexingState, issues } = analyzeIndexingState(page);
-    page.indexingState = indexingState;
-    if (issues.length > 0) page.issues.push(...issues);
-  }
-
-  // Site-level check (one extra request, not per-page): does the
-  // non-preferred www/non-www host cleanly redirect to the preferred one?
-  const hostCanonicalization = await checkHostCanonicalization(config.siteUrl);
-  if (hostCanonicalization.issue) {
-    const homepage = pages.find((p) => p.pageType === "homepage");
-    if (homepage) homepage.issues.push(hostCanonicalization.issue);
-  }
-
-  const crawlFinishedAt = new Date().toISOString();
-  const allIssues = pages.flatMap((p) => p.issues);
-
-  const report: CrawlReport = {
-    site: config.siteUrl,
-    crawlStartedAt,
-    crawlFinishedAt,
-    totalPages: pages.length,
-    hostCanonicalization: hostCanonicalization.summary,
-    discovery: {
-      sitemapUrls: sitemapUrls.size,
-      internallyDiscoveredUrls: pages.length,
-      discoveredNotInSitemap: coverage.discoveredNotInSitemapCount,
-      indexableMissingFromSitemap: coverage.indexableMissingFromSitemapCount,
-      nonIndexableMissingFromSitemap: coverage.nonIndexableMissingFromSitemapCount,
-      orphanedSitemapPages: coverage.orphanedSitemapPageCount,
-    },
-    indexing: tallyIndexingStates(pages),
-    summary: tallyIssues(allIssues),
-    siteIssues: [],
-    pages,
-  };
-
-  const persistResult = await persistCrawlAndCompare(report);
+  reporter.stage("persisting");
+  const persistResult = await persistCrawlAndCompare(report, runCtx);
 
   const reportWithHistory = {
     ...report,
